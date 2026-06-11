@@ -1,0 +1,9 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<BorlandProject>
+	<Transactions>
+    <Transaction>1899.12.30 00:00:00.000.321,E:\DelphiProjects\Practika\Project1.dproj=E:\DelphiProjects\Project1.dproj</Transaction>
+    <Transaction>1899.12.30 00:00:00.000.717,E:\DelphiProjects\Practika\Unit1.pas=E:\DelphiProjects\Unit1.pas</Transaction>
+    <Transaction>1899.12.30 00:00:00.000.717,E:\DelphiProjects\Practika\Unit1.dfm=E:\DelphiProjects\Unit1.dfm</Transaction>
+    <Transaction>1899.12.30 00:00:00.000.353,=E:\DelphiProjects\Unit1.pas</Transaction>
+  </Transactions>
+</BorlandProject>

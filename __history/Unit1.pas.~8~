@@ -1,0 +1,1387 @@
+unit Unit1;
+
+interface
+
+uses
+  Winapi.Windows,
+  System.SysUtils,
+  System.Classes,
+  System.StrUtils,
+  System.DateUtils,
+  Vcl.Graphics,
+  Vcl.Controls,
+  Vcl.Forms,
+  Vcl.Dialogs,
+  Vcl.Grids,
+  Vcl.StdCtrls,
+  Vcl.Menus,
+  Vcl.ComCtrls;
+
+type
+  TStringMatrix = array of array of string;
+
+  TOrder = record
+    GroupName: string;
+    Brand: string;
+    AcceptDate: string;
+    EmployeeCode: string;
+    IsDone: Boolean;
+  end;
+
+  TEmployee = record
+    Code: string;
+    FullName: string;
+    Position: string;
+    HoursPerDay: Integer;
+  end;
+
+  TCurrentTable = (ctOrders, ctEmployees);
+
+  TForm1 = class(TForm)
+    gridMain: TStringGrid;
+    btnSwitchTable: TButton;
+    btnSearch: TButton;
+    btnCancelSearch: TButton;
+    btnReadyToday: TButton;
+    btnEmployeeReport: TButton;
+    btnAdd: TButton;
+    edtSearch: TEdit;
+    dtpFrom: TDateTimePicker;
+    dtpTo: TDateTimePicker;
+    MainMenu1: TMainMenu;
+    mnuFile: TMenuItem;
+    mnuLoad: TMenuItem;
+    mnuSave: TMenuItem;
+    mnuSaveAs: TMenuItem;
+    mnuExitNoSave: TMenuItem;
+
+    procedure FormCreate(Sender: TObject);
+    procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean);
+
+    procedure btnSwitchTableClick(Sender: TObject);
+    procedure btnSearchClick(Sender: TObject);
+    procedure btnCancelSearchClick(Sender: TObject);
+    procedure btnAddClick(Sender: TObject);
+    procedure btnReadyTodayClick(Sender: TObject);
+    procedure btnEmployeeReportClick(Sender: TObject);
+
+    procedure mnuLoadClick(Sender: TObject);
+    procedure mnuSaveClick(Sender: TObject);
+    procedure mnuSaveAsClick(Sender: TObject);
+    procedure mnuExitNoSaveClick(Sender: TObject);
+
+    procedure gridMainDrawCell(Sender: TObject; ACol, ARow: Integer;
+      Rect: TRect; State: TGridDrawState);
+    procedure gridMainMouseDown(Sender: TObject; Button: TMouseButton;
+      Shift: TShiftState; X, Y: Integer);
+    procedure gridMainSelectCell(Sender: TObject; ACol, ARow: Integer;
+      var CanSelect: Boolean);
+    procedure gridMainSetEditText(Sender: TObject; ACol, ARow: Integer;
+      const Value: string);
+
+  private
+    Orders: array of TOrder;
+    Employees: array of TEmployee;
+
+    ViewOrderIndexes: array of Integer;
+    ViewEmployeeIndexes: array of Integer;
+
+    CurrentTable: TCurrentTable;
+    CurrentFileName: string;
+    IsFiltered: Boolean;
+    IsLoadingGrid: Boolean;
+    IsModified: Boolean;
+    ForceCloseWithoutSaving: Boolean;
+
+    procedure LoadDataFromFile(const FileName: string);
+    procedure SaveDataToFile(const FileName: string);
+
+    procedure ShowOrdersTable;
+    procedure ShowEmployeesTable;
+    procedure RefreshCurrentTable;
+    procedure BuildFullViewIndexes;
+
+    procedure SearchInCurrentTable(const SearchText: string);
+    procedure CancelSearch;
+
+    procedure AddRecordToCurrentTable;
+    procedure DeleteRecordFromCurrentTable(VisibleRow: Integer);
+    procedure UpdateRecordFromCell(ACol, ARow: Integer; const Value: string);
+
+    procedure SortCurrentTableByColumn(ACol: Integer);
+
+    procedure ShowReadyTodayReport;
+    procedure ShowEmployeeReport(DateFrom, DateTo: TDate);
+
+    function GetEmployeeFullNameByCode(const Code: string): string;
+    function SelectEmployeeCode: string;
+    procedure UpdateEmployeeCodeInOrders(const OldCode, NewCode: string);
+
+    function OrderContainsText(const Order: TOrder; const SearchText: string): Boolean;
+    function EmployeeContainsText(const Employee: TEmployee; const SearchText: string): Boolean;
+
+    function TryParseDateRu(const S: string; out D: TDate): Boolean;
+    function IsSameRuDate(const S: string; D: TDate): Boolean;
+
+    function BoolToReadyText(Value: Boolean): string;
+    function ReadyTextToBool(const S: string): Boolean;
+    function BoolToFileText(Value: Boolean): string;
+
+    procedure SplitLine(const S: string; Parts: TStrings);
+    function EscapeField(const S: string): string;
+    function UnescapeField(const S: string): string;
+
+    procedure PrepareGridBase;
+    procedure CreateReportWindow(const Title: string; const Headers: array of string;
+      const Data: TStringMatrix);
+  public
+  end;
+
+var
+  Form1: TForm1;
+
+implementation
+
+{$R *.dfm}
+
+procedure TForm1.FormCreate(Sender: TObject);
+begin
+  CurrentTable := ctOrders;
+  CurrentFileName := '';
+  IsFiltered := False;
+  IsLoadingGrid := False;
+  IsModified := False;
+  ForceCloseWithoutSaving := False;
+
+  dtpFrom.Date := Date;
+  dtpTo.Date := Date;
+
+  PrepareGridBase;
+  BuildFullViewIndexes;
+  ShowOrdersTable;
+end;
+
+procedure TForm1.PrepareGridBase;
+begin
+  gridMain.FixedRows := 1;
+
+  gridMain.Options := gridMain.Options + [
+    goEditing,
+    goFixedVertLine,
+    goFixedHorzLine,
+    goVertLine,
+    goHorzLine,
+    goColSizing
+  ];
+
+  gridMain.Options := gridMain.Options - [goRowSelect];
+end;
+
+procedure TForm1.BuildFullViewIndexes;
+var
+  I: Integer;
+begin
+  SetLength(ViewOrderIndexes, Length(Orders));
+
+  for I := 0 to High(Orders) do
+    ViewOrderIndexes[I] := I;
+
+  SetLength(ViewEmployeeIndexes, Length(Employees));
+
+  for I := 0 to High(Employees) do
+    ViewEmployeeIndexes[I] := I;
+end;
+
+procedure TForm1.RefreshCurrentTable;
+begin
+  if IsFiltered then
+    SearchInCurrentTable(edtSearch.Text)
+  else
+  begin
+    BuildFullViewIndexes;
+
+    if CurrentTable = ctOrders then
+      ShowOrdersTable
+    else
+      ShowEmployeesTable;
+  end;
+end;
+
+procedure TForm1.ShowOrdersTable;
+var
+  I, SourceIndex: Integer;
+begin
+  IsLoadingGrid := True;
+
+  gridMain.ColCount := 6;
+  gridMain.RowCount := Length(ViewOrderIndexes) + 1;
+
+  gridMain.Cells[0, 0] := 'Группа изделия';
+  gridMain.Cells[1, 0] := 'Марка';
+  gridMain.Cells[2, 0] := 'Дата приёмки';
+  gridMain.Cells[3, 0] := 'Сотрудник';
+  gridMain.Cells[4, 0] := 'Готовность';
+  gridMain.Cells[5, 0] := 'Удалить';
+
+  gridMain.ColWidths[0] := 130;
+  gridMain.ColWidths[1] := 120;
+  gridMain.ColWidths[2] := 110;
+  gridMain.ColWidths[3] := 180;
+  gridMain.ColWidths[4] := 110;
+  gridMain.ColWidths[5] := 80;
+
+  for I := 0 to High(ViewOrderIndexes) do
+  begin
+    SourceIndex := ViewOrderIndexes[I];
+
+    gridMain.Cells[0, I + 1] := Orders[SourceIndex].GroupName;
+    gridMain.Cells[1, I + 1] := Orders[SourceIndex].Brand;
+    gridMain.Cells[2, I + 1] := Orders[SourceIndex].AcceptDate;
+    gridMain.Cells[3, I + 1] := GetEmployeeFullNameByCode(Orders[SourceIndex].EmployeeCode);
+    gridMain.Cells[4, I + 1] := BoolToReadyText(Orders[SourceIndex].IsDone);
+    gridMain.Cells[5, I + 1] := 'Удалить';
+  end;
+
+  btnSwitchTable.Caption := 'Сотрудники';
+
+  IsLoadingGrid := False;
+end;
+
+procedure TForm1.ShowEmployeesTable;
+var
+  I, SourceIndex: Integer;
+begin
+  IsLoadingGrid := True;
+
+  gridMain.ColCount := 5;
+  gridMain.RowCount := Length(ViewEmployeeIndexes) + 1;
+
+  gridMain.Cells[0, 0] := 'Код';
+  gridMain.Cells[1, 0] := 'ФИО';
+  gridMain.Cells[2, 0] := 'Должность';
+  gridMain.Cells[3, 0] := 'Часов в сутки';
+  gridMain.Cells[4, 0] := 'Удалить';
+
+  gridMain.ColWidths[0] := 90;
+  gridMain.ColWidths[1] := 220;
+  gridMain.ColWidths[2] := 150;
+  gridMain.ColWidths[3] := 110;
+  gridMain.ColWidths[4] := 80;
+
+  for I := 0 to High(ViewEmployeeIndexes) do
+  begin
+    SourceIndex := ViewEmployeeIndexes[I];
+
+    gridMain.Cells[0, I + 1] := Employees[SourceIndex].Code;
+    gridMain.Cells[1, I + 1] := Employees[SourceIndex].FullName;
+    gridMain.Cells[2, I + 1] := Employees[SourceIndex].Position;
+    gridMain.Cells[3, I + 1] := IntToStr(Employees[SourceIndex].HoursPerDay);
+    gridMain.Cells[4, I + 1] := 'Удалить';
+  end;
+
+  btnSwitchTable.Caption := 'Квитанции';
+
+  IsLoadingGrid := False;
+end;
+
+procedure TForm1.btnSwitchTableClick(Sender: TObject);
+begin
+  if CurrentTable = ctOrders then
+    CurrentTable := ctEmployees
+  else
+    CurrentTable := ctOrders;
+
+  edtSearch.Text := '';
+  CancelSearch;
+end;
+
+procedure TForm1.btnSearchClick(Sender: TObject);
+begin
+  SearchInCurrentTable(edtSearch.Text);
+end;
+
+procedure TForm1.btnCancelSearchClick(Sender: TObject);
+begin
+  edtSearch.Text := '';
+  CancelSearch;
+end;
+
+procedure TForm1.btnAddClick(Sender: TObject);
+begin
+  AddRecordToCurrentTable;
+end;
+
+procedure TForm1.btnReadyTodayClick(Sender: TObject);
+begin
+  ShowReadyTodayReport;
+end;
+
+procedure TForm1.btnEmployeeReportClick(Sender: TObject);
+begin
+  ShowEmployeeReport(dtpFrom.Date, dtpTo.Date);
+end;
+
+procedure TForm1.mnuLoadClick(Sender: TObject);
+var
+  Dlg: TOpenDialog;
+begin
+  Dlg := TOpenDialog.Create(nil);
+  try
+    Dlg.Filter := 'Текстовые файлы (*.txt)|*.txt|Все файлы (*.*)|*.*';
+
+    if Dlg.Execute then
+    begin
+      LoadDataFromFile(Dlg.FileName);
+      CurrentFileName := Dlg.FileName;
+      IsModified := False;
+      edtSearch.Text := '';
+      CancelSearch;
+      ShowMessage('Файл загружен.');
+    end;
+  finally
+    Dlg.Free;
+  end;
+end;
+
+procedure TForm1.mnuSaveClick(Sender: TObject);
+begin
+  if CurrentFileName = '' then
+    mnuSaveAsClick(Sender)
+  else
+  begin
+    SaveDataToFile(CurrentFileName);
+    IsModified := False;
+    ShowMessage('Файл сохранён.');
+  end;
+end;
+
+procedure TForm1.mnuSaveAsClick(Sender: TObject);
+var
+  Dlg: TSaveDialog;
+begin
+  Dlg := TSaveDialog.Create(nil);
+  try
+    Dlg.Filter := 'Текстовые файлы (*.txt)|*.txt|Все файлы (*.*)|*.*';
+    Dlg.DefaultExt := 'txt';
+
+    if Dlg.Execute then
+    begin
+      SaveDataToFile(Dlg.FileName);
+      CurrentFileName := Dlg.FileName;
+      IsModified := False;
+      ShowMessage('Файл сохранён.');
+    end;
+  finally
+    Dlg.Free;
+  end;
+end;
+
+procedure TForm1.mnuExitNoSaveClick(Sender: TObject);
+begin
+  ForceCloseWithoutSaving := True;
+  Close;
+end;
+
+procedure TForm1.FormCloseQuery(Sender: TObject; var CanClose: Boolean);
+var
+  Answer: Integer;
+begin
+  if ForceCloseWithoutSaving then
+  begin
+    CanClose := True;
+    Exit;
+  end;
+
+  if not IsModified then
+  begin
+    CanClose := True;
+    Exit;
+  end;
+
+  Answer := MessageDlg(
+    'Сохранить изменения перед выходом?',
+    mtConfirmation,
+    [mbYes, mbNo, mbCancel],
+    0
+  );
+
+  case Answer of
+    mrYes:
+      begin
+        mnuSaveClick(Sender);
+        CanClose := True;
+      end;
+
+    mrNo:
+      CanClose := True;
+
+    mrCancel:
+      CanClose := False;
+  end;
+end;
+
+procedure TForm1.LoadDataFromFile(const FileName: string);
+var
+  Lines: TStringList;
+  Parts: TStringList;
+  I: Integer;
+  Section: string;
+  OrderCount, EmployeeCount: Integer;
+begin
+  Lines := TStringList.Create;
+  Parts := TStringList.Create;
+  try
+    Lines.LoadFromFile(FileName, TEncoding.UTF8);
+
+    SetLength(Orders, 0);
+    SetLength(Employees, 0);
+
+    Section := '';
+    OrderCount := 0;
+    EmployeeCount := 0;
+
+    for I := 0 to Lines.Count - 1 do
+    begin
+      if Trim(Lines[I]) = '' then
+        Continue;
+
+      if SameText(Trim(Lines[I]), '[ORDERS]') then
+      begin
+        Section := 'ORDERS';
+        Continue;
+      end;
+
+      if SameText(Trim(Lines[I]), '[EMPLOYEES]') then
+      begin
+        Section := 'EMPLOYEES';
+        Continue;
+      end;
+
+      SplitLine(Lines[I], Parts);
+
+      if SameText(Section, 'ORDERS') then
+      begin
+        if Parts.Count >= 5 then
+        begin
+          SetLength(Orders, OrderCount + 1);
+
+          Orders[OrderCount].GroupName := UnescapeField(Parts[0]);
+          Orders[OrderCount].Brand := UnescapeField(Parts[1]);
+          Orders[OrderCount].AcceptDate := UnescapeField(Parts[2]);
+          Orders[OrderCount].EmployeeCode := UnescapeField(Parts[3]);
+          Orders[OrderCount].IsDone := Parts[4] = '1';
+
+          Inc(OrderCount);
+        end;
+      end
+      else if SameText(Section, 'EMPLOYEES') then
+      begin
+        if Parts.Count >= 4 then
+        begin
+          SetLength(Employees, EmployeeCount + 1);
+
+          Employees[EmployeeCount].Code := UnescapeField(Parts[0]);
+          Employees[EmployeeCount].FullName := UnescapeField(Parts[1]);
+          Employees[EmployeeCount].Position := UnescapeField(Parts[2]);
+          Employees[EmployeeCount].HoursPerDay := StrToIntDef(Parts[3], 0);
+
+          Inc(EmployeeCount);
+        end;
+      end;
+    end;
+
+    BuildFullViewIndexes;
+  finally
+    Lines.Free;
+    Parts.Free;
+  end;
+end;
+
+procedure TForm1.SaveDataToFile(const FileName: string);
+var
+  Lines: TStringList;
+  I: Integer;
+begin
+  Lines := TStringList.Create;
+  try
+    Lines.Add('[ORDERS]');
+
+    for I := 0 to High(Orders) do
+    begin
+      Lines.Add(
+        EscapeField(Orders[I].GroupName) + ';' +
+        EscapeField(Orders[I].Brand) + ';' +
+        EscapeField(Orders[I].AcceptDate) + ';' +
+        EscapeField(Orders[I].EmployeeCode) + ';' +
+        BoolToFileText(Orders[I].IsDone)
+      );
+    end;
+
+    Lines.Add('');
+    Lines.Add('[EMPLOYEES]');
+
+    for I := 0 to High(Employees) do
+    begin
+      Lines.Add(
+        EscapeField(Employees[I].Code) + ';' +
+        EscapeField(Employees[I].FullName) + ';' +
+        EscapeField(Employees[I].Position) + ';' +
+        IntToStr(Employees[I].HoursPerDay)
+      );
+    end;
+
+    Lines.SaveToFile(FileName, TEncoding.UTF8);
+  finally
+    Lines.Free;
+  end;
+end;
+
+procedure TForm1.SearchInCurrentTable(const SearchText: string);
+var
+  I, Count: Integer;
+  S: string;
+begin
+  S := AnsiLowerCase(Trim(SearchText));
+  IsFiltered := S <> '';
+
+  if S = '' then
+  begin
+    CancelSearch;
+    Exit;
+  end;
+
+  if CurrentTable = ctOrders then
+  begin
+    SetLength(ViewOrderIndexes, 0);
+    Count := 0;
+
+    for I := 0 to High(Orders) do
+    begin
+      if OrderContainsText(Orders[I], S) then
+      begin
+        SetLength(ViewOrderIndexes, Count + 1);
+        ViewOrderIndexes[Count] := I;
+        Inc(Count);
+      end;
+    end;
+
+    ShowOrdersTable;
+  end
+  else
+  begin
+    SetLength(ViewEmployeeIndexes, 0);
+    Count := 0;
+
+    for I := 0 to High(Employees) do
+    begin
+      if EmployeeContainsText(Employees[I], S) then
+      begin
+        SetLength(ViewEmployeeIndexes, Count + 1);
+        ViewEmployeeIndexes[Count] := I;
+        Inc(Count);
+      end;
+    end;
+
+    ShowEmployeesTable;
+  end;
+end;
+
+procedure TForm1.CancelSearch;
+begin
+  IsFiltered := False;
+  BuildFullViewIndexes;
+
+  if CurrentTable = ctOrders then
+    ShowOrdersTable
+  else
+    ShowEmployeesTable;
+end;
+
+procedure TForm1.AddRecordToCurrentTable;
+var
+  N: Integer;
+begin
+  if CurrentTable = ctOrders then
+  begin
+    N := Length(Orders);
+    SetLength(Orders, N + 1);
+
+    Orders[N].GroupName := '';
+    Orders[N].Brand := '';
+    Orders[N].AcceptDate := FormatDateTime('dd.mm.yyyy', Date);
+    Orders[N].EmployeeCode := '';
+    Orders[N].IsDone := False;
+  end
+  else
+  begin
+    N := Length(Employees);
+    SetLength(Employees, N + 1);
+
+    Employees[N].Code := '';
+    Employees[N].FullName := '';
+    Employees[N].Position := '';
+    Employees[N].HoursPerDay := 0;
+  end;
+
+  IsModified := True;
+  CancelSearch;
+end;
+
+procedure TForm1.DeleteRecordFromCurrentTable(VisibleRow: Integer);
+var
+  SourceIndex, I: Integer;
+begin
+  if VisibleRow <= 0 then
+    Exit;
+
+  if MessageDlg('Удалить выбранную запись?', mtConfirmation, [mbYes, mbNo], 0) <> mrYes then
+    Exit;
+
+  if CurrentTable = ctOrders then
+  begin
+    if VisibleRow - 1 > High(ViewOrderIndexes) then
+      Exit;
+
+    SourceIndex := ViewOrderIndexes[VisibleRow - 1];
+
+    for I := SourceIndex to High(Orders) - 1 do
+      Orders[I] := Orders[I + 1];
+
+    SetLength(Orders, Length(Orders) - 1);
+  end
+  else
+  begin
+    if VisibleRow - 1 > High(ViewEmployeeIndexes) then
+      Exit;
+
+    SourceIndex := ViewEmployeeIndexes[VisibleRow - 1];
+
+    for I := SourceIndex to High(Employees) - 1 do
+      Employees[I] := Employees[I + 1];
+
+    SetLength(Employees, Length(Employees) - 1);
+  end;
+
+  IsModified := True;
+  RefreshCurrentTable;
+end;
+
+procedure TForm1.gridMainMouseDown(Sender: TObject; Button: TMouseButton;
+  Shift: TShiftState; X, Y: Integer);
+var
+  ACol, ARow: Integer;
+  SourceIndex: Integer;
+  NewCode: string;
+begin
+  gridMain.MouseToCell(X, Y, ACol, ARow);
+
+  if ARow = 0 then
+  begin
+    SortCurrentTableByColumn(ACol);
+    Exit;
+  end;
+
+  if ARow <= 0 then
+    Exit;
+
+  if CurrentTable = ctOrders then
+  begin
+    if ACol = 5 then
+    begin
+      DeleteRecordFromCurrentTable(ARow);
+      Exit;
+    end;
+
+    if ACol = 3 then
+    begin
+      if ARow - 1 > High(ViewOrderIndexes) then
+        Exit;
+
+      SourceIndex := ViewOrderIndexes[ARow - 1];
+
+      NewCode := SelectEmployeeCode;
+
+      if NewCode <> '' then
+      begin
+        Orders[SourceIndex].EmployeeCode := NewCode;
+        IsModified := True;
+        RefreshCurrentTable;
+      end;
+    end;
+  end
+  else
+  begin
+    if ACol = 4 then
+    begin
+      DeleteRecordFromCurrentTable(ARow);
+      Exit;
+    end;
+  end;
+end;
+
+procedure TForm1.gridMainSelectCell(Sender: TObject; ACol, ARow: Integer;
+  var CanSelect: Boolean);
+begin
+  CanSelect := True;
+
+  if ARow = 0 then
+  begin
+    gridMain.Options := gridMain.Options - [goEditing];
+    Exit;
+  end;
+
+  if CurrentTable = ctOrders then
+  begin
+    if (ACol = 3) or (ACol = 5) then
+      gridMain.Options := gridMain.Options - [goEditing]
+    else
+      gridMain.Options := gridMain.Options + [goEditing];
+  end
+  else
+  begin
+    if ACol = 4 then
+      gridMain.Options := gridMain.Options - [goEditing]
+    else
+      gridMain.Options := gridMain.Options + [goEditing];
+  end;
+end;
+
+procedure TForm1.gridMainSetEditText(Sender: TObject; ACol, ARow: Integer;
+  const Value: string);
+begin
+  if IsLoadingGrid then
+    Exit;
+
+  UpdateRecordFromCell(ACol, ARow, Value);
+end;
+
+procedure TForm1.UpdateRecordFromCell(ACol, ARow: Integer; const Value: string);
+var
+  SourceIndex: Integer;
+  OldCode: string;
+begin
+  if ARow <= 0 then
+    Exit;
+
+  if CurrentTable = ctOrders then
+  begin
+    if ARow - 1 > High(ViewOrderIndexes) then
+      Exit;
+
+    SourceIndex := ViewOrderIndexes[ARow - 1];
+
+    case ACol of
+      0:
+        Orders[SourceIndex].GroupName := Value;
+
+      1:
+        Orders[SourceIndex].Brand := Value;
+
+      2:
+        Orders[SourceIndex].AcceptDate := Value;
+
+      4:
+        Orders[SourceIndex].IsDone := ReadyTextToBool(Value);
+    end;
+  end
+  else
+  begin
+    if ARow - 1 > High(ViewEmployeeIndexes) then
+      Exit;
+
+    SourceIndex := ViewEmployeeIndexes[ARow - 1];
+
+    case ACol of
+      0:
+        begin
+          OldCode := Employees[SourceIndex].Code;
+          Employees[SourceIndex].Code := Value;
+          UpdateEmployeeCodeInOrders(OldCode, Value);
+        end;
+
+      1:
+        Employees[SourceIndex].FullName := Value;
+
+      2:
+        Employees[SourceIndex].Position := Value;
+
+      3:
+        Employees[SourceIndex].HoursPerDay := StrToIntDef(Value, 0);
+    end;
+  end;
+
+  IsModified := True;
+end;
+
+procedure TForm1.SortCurrentTableByColumn(ACol: Integer);
+var
+  I, J: Integer;
+  TempOrder: TOrder;
+  TempEmployee: TEmployee;
+
+  function CompareDates(const A, B: string): Integer;
+  var
+    DateA, DateB: TDate;
+    HasDateA, HasDateB: Boolean;
+  begin
+    HasDateA := TryParseDateRu(A, DateA);
+    HasDateB := TryParseDateRu(B, DateB);
+
+    if HasDateA and HasDateB then
+    begin
+      if DateA < DateB then
+        Result := -1
+      else if DateA > DateB then
+        Result := 1
+      else
+        Result := 0;
+    end
+    else
+      Result := CompareText(A, B);
+  end;
+
+  function CompareOrders(const A, B: TOrder): Integer;
+  begin
+    Result := 0;
+
+    case ACol of
+      0:
+        Result := CompareText(A.GroupName, B.GroupName);
+
+      1:
+        Result := CompareText(A.Brand, B.Brand);
+
+      2:
+        Result := CompareDates(A.AcceptDate, B.AcceptDate);
+
+      3:
+        Result := CompareText(
+          GetEmployeeFullNameByCode(A.EmployeeCode),
+          GetEmployeeFullNameByCode(B.EmployeeCode)
+        );
+
+      4:
+        Result := CompareText(BoolToReadyText(A.IsDone), BoolToReadyText(B.IsDone));
+    end;
+  end;
+
+  function CompareEmployees(const A, B: TEmployee): Integer;
+  begin
+    Result := 0;
+
+    case ACol of
+      0:
+        Result := CompareText(A.Code, B.Code);
+
+      1:
+        Result := CompareText(A.FullName, B.FullName);
+
+      2:
+        Result := CompareText(A.Position, B.Position);
+
+      3:
+        Result := A.HoursPerDay - B.HoursPerDay;
+    end;
+  end;
+
+begin
+  if CurrentTable = ctOrders then
+  begin
+    if ACol = 5 then
+      Exit;
+
+    for I := 0 to High(Orders) - 1 do
+      for J := I + 1 to High(Orders) do
+        if CompareOrders(Orders[I], Orders[J]) > 0 then
+        begin
+          TempOrder := Orders[I];
+          Orders[I] := Orders[J];
+          Orders[J] := TempOrder;
+        end;
+  end
+  else
+  begin
+    if ACol = 4 then
+      Exit;
+
+    for I := 0 to High(Employees) - 1 do
+      for J := I + 1 to High(Employees) do
+        if CompareEmployees(Employees[I], Employees[J]) > 0 then
+        begin
+          TempEmployee := Employees[I];
+          Employees[I] := Employees[J];
+          Employees[J] := TempEmployee;
+        end;
+  end;
+
+  IsModified := True;
+  RefreshCurrentTable;
+end;
+
+procedure TForm1.gridMainDrawCell(Sender: TObject; ACol, ARow: Integer;
+  Rect: TRect; State: TGridDrawState);
+var
+  Text: string;
+  R: TRect;
+begin
+  Text := gridMain.Cells[ACol, ARow];
+
+  if ARow = 0 then
+  begin
+    gridMain.Canvas.Brush.Color := clBtnFace;
+    gridMain.Canvas.Font.Color := clBlack;
+    gridMain.Canvas.Font.Style := [fsBold];
+  end
+  else
+  begin
+    gridMain.Canvas.Brush.Color := clWhite;
+    gridMain.Canvas.Font.Color := clBlack;
+    gridMain.Canvas.Font.Style := [];
+  end;
+
+  if gdSelected in State then
+    gridMain.Canvas.Brush.Color := clSkyBlue;
+
+  gridMain.Canvas.FillRect(Rect);
+
+  if ((CurrentTable = ctOrders) and (ACol = 5) and (ARow > 0)) or
+     ((CurrentTable = ctEmployees) and (ACol = 4) and (ARow > 0)) then
+  begin
+    R := Rect;
+    InflateRect(R, -4, -4);
+
+    DrawFrameControl(gridMain.Canvas.Handle, R, DFC_BUTTON, DFCS_BUTTONPUSH);
+
+    DrawText(
+      gridMain.Canvas.Handle,
+      PChar(Text),
+      Length(Text),
+      R,
+      DT_CENTER or DT_VCENTER or DT_SINGLELINE
+    );
+  end
+  else
+  begin
+    R := Rect;
+    InflateRect(R, -4, -2);
+
+    DrawText(
+      gridMain.Canvas.Handle,
+      PChar(Text),
+      Length(Text),
+      R,
+      DT_LEFT or DT_VCENTER or DT_SINGLELINE
+    );
+  end;
+end;
+
+function TForm1.SelectEmployeeCode: string;
+var
+  F: TForm;
+  G: TStringGrid;
+  BtnOk, BtnCancel: TButton;
+  I: Integer;
+begin
+  Result := '';
+
+  F := TForm.Create(nil);
+  try
+    F.Caption := 'Выбор сотрудника';
+    F.Width := 430;
+    F.Height := 320;
+    F.Position := poScreenCenter;
+
+    G := TStringGrid.Create(F);
+    G.Parent := F;
+    G.Align := alTop;
+    G.Height := 230;
+    G.FixedRows := 1;
+    G.ColCount := 2;
+    G.RowCount := Length(Employees) + 1;
+    G.Options := G.Options + [goRowSelect];
+    G.Cells[0, 0] := 'Код';
+    G.Cells[1, 0] := 'ФИО';
+    G.ColWidths[0] := 100;
+    G.ColWidths[1] := 280;
+
+    for I := 0 to High(Employees) do
+    begin
+      G.Cells[0, I + 1] := Employees[I].Code;
+      G.Cells[1, I + 1] := Employees[I].FullName;
+    end;
+
+    BtnOk := TButton.Create(F);
+    BtnOk.Parent := F;
+    BtnOk.Caption := 'Выбрать';
+    BtnOk.ModalResult := mrOk;
+    BtnOk.Left := 220;
+    BtnOk.Top := 240;
+    BtnOk.Width := 90;
+
+    BtnCancel := TButton.Create(F);
+    BtnCancel.Parent := F;
+    BtnCancel.Caption := 'Отмена';
+    BtnCancel.ModalResult := mrCancel;
+    BtnCancel.Left := 320;
+    BtnCancel.Top := 240;
+    BtnCancel.Width := 90;
+
+    if F.ShowModal = mrOk then
+    begin
+      if G.Row > 0 then
+        Result := G.Cells[0, G.Row];
+    end;
+  finally
+    F.Free;
+  end;
+end;
+
+function TForm1.GetEmployeeFullNameByCode(const Code: string): string;
+var
+  I: Integer;
+begin
+  Result := '';
+
+  for I := 0 to High(Employees) do
+  begin
+    if Employees[I].Code = Code then
+    begin
+      Result := Employees[I].FullName;
+      Exit;
+    end;
+  end;
+end;
+
+procedure TForm1.UpdateEmployeeCodeInOrders(const OldCode, NewCode: string);
+var
+  I: Integer;
+begin
+  if OldCode = NewCode then
+    Exit;
+
+  for I := 0 to High(Orders) do
+    if Orders[I].EmployeeCode = OldCode then
+      Orders[I].EmployeeCode := NewCode;
+end;
+
+procedure TForm1.ShowReadyTodayReport;
+var
+  Groups: TStringList;
+  Total, Done, NotDone: array of Integer;
+  I, Index: Integer;
+  Today: TDate;
+  Data: TStringMatrix;
+begin
+  Groups := TStringList.Create;
+  try
+    Today := Date;
+
+    for I := 0 to High(Orders) do
+    begin
+      if not IsSameRuDate(Orders[I].AcceptDate, Today) then
+        Continue;
+
+      Index := Groups.IndexOf(Orders[I].GroupName);
+
+      if Index = -1 then
+      begin
+        Groups.Add(Orders[I].GroupName);
+
+        SetLength(Total, Groups.Count);
+        SetLength(Done, Groups.Count);
+        SetLength(NotDone, Groups.Count);
+
+        Index := Groups.Count - 1;
+      end;
+
+      Inc(Total[Index]);
+
+      if Orders[I].IsDone then
+        Inc(Done[Index])
+      else
+        Inc(NotDone[Index]);
+    end;
+
+    SetLength(Data, Groups.Count);
+
+    for I := 0 to Groups.Count - 1 do
+    begin
+      SetLength(Data[I], 4);
+      Data[I][0] := Groups[I];
+      Data[I][1] := IntToStr(Total[I]);
+      Data[I][2] := IntToStr(Done[I]);
+      Data[I][3] := IntToStr(NotDone[I]);
+    end;
+
+    CreateReportWindow(
+      'Состояние готовности заказов на текущие сутки',
+      ['Группа изделия', 'Всего за сегодня', 'Выполнено', 'Не выполнено'],
+      Data
+    );
+  finally
+    Groups.Free;
+  end;
+end;
+
+procedure TForm1.ShowEmployeeReport(DateFrom, DateTo: TDate);
+var
+  I, J, CountDone: Integer;
+  D: TDate;
+  Data: TStringMatrix;
+begin
+  if DateFrom > DateTo then
+  begin
+    ShowMessage('Дата начала периода не может быть больше даты окончания.');
+    Exit;
+  end;
+
+  SetLength(Data, Length(Employees));
+
+  for I := 0 to High(Employees) do
+  begin
+    CountDone := 0;
+
+    for J := 0 to High(Orders) do
+    begin
+      if not Orders[J].IsDone then
+        Continue;
+
+      if Orders[J].EmployeeCode <> Employees[I].Code then
+        Continue;
+
+      if TryParseDateRu(Orders[J].AcceptDate, D) then
+      begin
+        if (D >= DateFrom) and (D <= DateTo) then
+          Inc(CountDone);
+      end;
+    end;
+
+    SetLength(Data[I], 4);
+    Data[I][0] := Employees[I].Code;
+    Data[I][1] := Employees[I].FullName;
+    Data[I][2] := Employees[I].Position;
+    Data[I][3] := IntToStr(CountDone);
+  end;
+
+  CreateReportWindow(
+    'Число выполненных заказов по сотрудникам',
+    ['Код', 'ФИО', 'Должность', 'Выполнено заказов'],
+    Data
+  );
+end;
+
+procedure TForm1.CreateReportWindow(const Title: string; const Headers: array of string;
+  const Data: TStringMatrix);
+var
+  F: TForm;
+  G: TStringGrid;
+  I, J: Integer;
+begin
+  F := TForm.Create(nil);
+  try
+    F.Caption := Title;
+    F.Width := 700;
+    F.Height := 400;
+    F.Position := poScreenCenter;
+
+    G := TStringGrid.Create(F);
+    G.Parent := F;
+    G.Align := alClient;
+    G.FixedRows := 1;
+    G.ColCount := Length(Headers);
+    G.RowCount := Length(Data) + 1;
+
+    G.Options := G.Options + [
+      goColSizing,
+      goFixedVertLine,
+      goFixedHorzLine,
+      goVertLine,
+      goHorzLine
+    ];
+
+    for I := 0 to High(Headers) do
+    begin
+      G.Cells[I, 0] := Headers[I];
+      G.ColWidths[I] := 150;
+    end;
+
+    for I := 0 to High(Data) do
+      for J := 0 to High(Data[I]) do
+        G.Cells[J, I + 1] := Data[I][J];
+
+    F.ShowModal;
+  finally
+    F.Free;
+  end;
+end;
+
+function TForm1.OrderContainsText(const Order: TOrder; const SearchText: string): Boolean;
+var
+  S: string;
+begin
+  S := AnsiLowerCase(SearchText);
+
+  Result :=
+    Pos(S, AnsiLowerCase(Order.GroupName)) > 0;
+
+  if Result then
+    Exit;
+
+  Result :=
+    Pos(S, AnsiLowerCase(Order.Brand)) > 0;
+
+  if Result then
+    Exit;
+
+  Result :=
+    Pos(S, AnsiLowerCase(Order.AcceptDate)) > 0;
+
+  if Result then
+    Exit;
+
+  Result :=
+    Pos(S, AnsiLowerCase(GetEmployeeFullNameByCode(Order.EmployeeCode))) > 0;
+
+  if Result then
+    Exit;
+
+  Result :=
+    Pos(S, AnsiLowerCase(BoolToReadyText(Order.IsDone))) > 0;
+end;
+
+function TForm1.EmployeeContainsText(const Employee: TEmployee; const SearchText: string): Boolean;
+var
+  S: string;
+begin
+  S := AnsiLowerCase(SearchText);
+
+  Result :=
+    Pos(S, AnsiLowerCase(Employee.Code)) > 0;
+
+  if Result then
+    Exit;
+
+  Result :=
+    Pos(S, AnsiLowerCase(Employee.FullName)) > 0;
+
+  if Result then
+    Exit;
+
+  Result :=
+    Pos(S, AnsiLowerCase(Employee.Position)) > 0;
+
+  if Result then
+    Exit;
+
+  Result :=
+    Pos(S, AnsiLowerCase(IntToStr(Employee.HoursPerDay))) > 0;
+end;
+
+function TForm1.BoolToReadyText(Value: Boolean): string;
+begin
+  if Value then
+    Result := 'Выполнен'
+  else
+    Result := 'Не выполнен';
+end;
+
+function TForm1.ReadyTextToBool(const S: string): Boolean;
+var
+  T: string;
+begin
+  T := AnsiLowerCase(Trim(S));
+
+  Result :=
+    (T = 'выполнен') or
+    (T = 'выполнено') or
+    (T = 'да') or
+    (T = '1') or
+    (T = '+');
+end;
+
+function TForm1.BoolToFileText(Value: Boolean): string;
+begin
+  if Value then
+    Result := '1'
+  else
+    Result := '0';
+end;
+
+function TForm1.TryParseDateRu(const S: string; out D: TDate): Boolean;
+var
+  DayPart, MonthPart, YearPart: Integer;
+  P1, P2: Integer;
+  StrDay, StrMonth, StrYear: string;
+begin
+  Result := False;
+  D := 0;
+
+  P1 := Pos('.', S);
+  if P1 = 0 then
+    Exit;
+
+  P2 := PosEx('.', S, P1 + 1);
+  if P2 = 0 then
+    Exit;
+
+  StrDay := Copy(S, 1, P1 - 1);
+  StrMonth := Copy(S, P1 + 1, P2 - P1 - 1);
+  StrYear := Copy(S, P2 + 1, Length(S));
+
+  if not TryStrToInt(StrDay, DayPart) then
+    Exit;
+
+  if not TryStrToInt(StrMonth, MonthPart) then
+    Exit;
+
+  if not TryStrToInt(StrYear, YearPart) then
+    Exit;
+
+  try
+    D := EncodeDate(YearPart, MonthPart, DayPart);
+    Result := True;
+  except
+    Result := False;
+  end;
+end;
+
+function TForm1.IsSameRuDate(const S: string; D: TDate): Boolean;
+var
+  ParsedDate: TDate;
+begin
+  Result := TryParseDateRu(S, ParsedDate) and SameDate(ParsedDate, D);
+end;
+
+procedure TForm1.SplitLine(const S: string; Parts: TStrings);
+var
+  I: Integer;
+  Current: string;
+begin
+  Parts.Clear;
+  Current := '';
+
+  for I := 1 to Length(S) do
+  begin
+    if S[I] = ';' then
+    begin
+      Parts.Add(Current);
+      Current := '';
+    end
+    else
+      Current := Current + S[I];
+  end;
+
+  Parts.Add(Current);
+end;
+
+function TForm1.EscapeField(const S: string): string;
+begin
+  Result := StringReplace(S, ';', ',', [rfReplaceAll]);
+end;
+
+function TForm1.UnescapeField(const S: string): string;
+begin
+  Result := S;
+end;
+
+end.
