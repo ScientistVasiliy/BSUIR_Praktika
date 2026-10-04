@@ -8,6 +8,7 @@ uses
   System.Classes,
   System.StrUtils,
   System.DateUtils,
+  System.Generics.Collections,
   Vcl.Graphics,
   Vcl.Controls,
   Vcl.Forms,
@@ -18,9 +19,6 @@ uses
   Vcl.ComCtrls;
 
 type
-  // Двумерный массив строк используется для вывода отчётов.
-  TStringMatrix = array of array of string;
-
   // Запись квитанции о сданной в ремонт радиоаппаратуре.
   TOrder = record
     GroupName: string;
@@ -86,13 +84,13 @@ type
     procedure gridMainExit(Sender: TObject);
 
   private
-    // Основные массивы данных программы.
-    Orders: array of TOrder;
-    Employees: array of TEmployee;
+    // Основные динамические списки данных программы.
+    Orders: TList<TOrder>;
+    Employees: TList<TEmployee>;
 
-    // Индексы строк, которые сейчас должны отображаться в таблице.
-    ViewOrderIndexes: array of Integer;
-    ViewEmployeeIndexes: array of Integer;
+    // Списки индексов строк, отображаемых в таблице после фильтрации.
+    ViewOrderIndexes: TList<Integer>;
+    ViewEmployeeIndexes: TList<Integer>;
 
     CurrentTable: TCurrentTable;
     CurrentFileName: string;
@@ -148,12 +146,12 @@ type
     function UnescapeField(const S: string): string;
 
     procedure PrepareGridBase;
-    procedure CreateReportWindow(const Title: string; const Headers: array of string;
-      const Data: TStringMatrix);
+    procedure CreateReportWindow(const Title, HeaderLine: string; DataRows: TStrings);
 
     function AskSaveChangesRussian: Integer;
     function AskDeleteRussian: Boolean;
   public
+    destructor Destroy; override;
   end;
 
 var
@@ -163,9 +161,24 @@ implementation
 
 {$R *.dfm}
 
+// Освобождение динамических списков при закрытии формы.
+destructor TForm1.Destroy;
+begin
+  Orders.Free;
+  Employees.Free;
+  ViewOrderIndexes.Free;
+  ViewEmployeeIndexes.Free;
+  inherited;
+end;
+
 // Инициализация формы и начальных параметров программы.
 procedure TForm1.FormCreate(Sender: TObject);
 begin
+  Orders := TList<TOrder>.Create;
+  Employees := TList<TEmployee>.Create;
+  ViewOrderIndexes := TList<Integer>.Create;
+  ViewEmployeeIndexes := TList<Integer>.Create;
+
   CurrentTable := ctOrders;
   CurrentFileName := '';
   IsFiltered := False;
@@ -201,21 +214,21 @@ begin
   gridMain.Options := gridMain.Options - [goRowSelect];
 end;
 
-// Формирует полный список индексов для отображения всех записей.
+// Формирует полные списки индексов для отображения всех записей.
 procedure TForm1.BuildFullViewIndexes;
 var
   I: Integer;
 begin
-  SetLength(ViewOrderIndexes, Length(Orders));
-  for I := 0 to High(Orders) do
-    ViewOrderIndexes[I] := I;
+  ViewOrderIndexes.Clear;
+  for I := 0 to Orders.Count - 1 do
+    ViewOrderIndexes.Add(I);
 
-  SetLength(ViewEmployeeIndexes, Length(Employees));
-  for I := 0 to High(Employees) do
-    ViewEmployeeIndexes[I] := I;
+  ViewEmployeeIndexes.Clear;
+  for I := 0 to Employees.Count - 1 do
+    ViewEmployeeIndexes.Add(I);
 end;
 
-// Обновляет таблицу с учётом текущего режима и фильтра.
+// Обновляет таблицу с учетом текущей таблицы и режима фильтрации.
 procedure TForm1.RefreshCurrentTable;
 begin
   if IsFiltered then
@@ -235,6 +248,7 @@ end;
 procedure TForm1.ShowOrdersTable;
 var
   I, SourceIndex: Integer;
+  OrderItem: TOrder;
 begin
   IsLoadingGrid := True;
 
@@ -242,7 +256,7 @@ begin
   gridMain.ScrollBars := ssVertical;
 
   gridMain.ColCount := 6;
-  gridMain.RowCount := Length(ViewOrderIndexes) + 1;
+  gridMain.RowCount := ViewOrderIndexes.Count + 1;
 
   gridMain.Cells[0, 0] := 'Группа изделия';
   gridMain.Cells[1, 0] := 'Марка';
@@ -258,15 +272,16 @@ begin
   gridMain.ColWidths[4] := 90;
   gridMain.ColWidths[5] := 70;
 
-  for I := 0 to High(ViewOrderIndexes) do
+  for I := 0 to ViewOrderIndexes.Count - 1 do
   begin
     SourceIndex := ViewOrderIndexes[I];
+    OrderItem := Orders[SourceIndex];
 
-    gridMain.Cells[0, I + 1] := Orders[SourceIndex].GroupName;
-    gridMain.Cells[1, I + 1] := Orders[SourceIndex].Brand;
-    gridMain.Cells[2, I + 1] := Orders[SourceIndex].AcceptDate;
-    gridMain.Cells[3, I + 1] := GetEmployeeFullNameByCode(Orders[SourceIndex].EmployeeCode);
-    gridMain.Cells[4, I + 1] := BoolToReadyText(Orders[SourceIndex].IsDone);
+    gridMain.Cells[0, I + 1] := OrderItem.GroupName;
+    gridMain.Cells[1, I + 1] := OrderItem.Brand;
+    gridMain.Cells[2, I + 1] := OrderItem.AcceptDate;
+    gridMain.Cells[3, I + 1] := GetEmployeeFullNameByCode(OrderItem.EmployeeCode);
+    gridMain.Cells[4, I + 1] := BoolToReadyText(OrderItem.IsDone);
     gridMain.Cells[5, I + 1] := 'Удалить';
   end;
 
@@ -279,6 +294,7 @@ end;
 procedure TForm1.ShowEmployeesTable;
 var
   I, SourceIndex: Integer;
+  EmployeeItem: TEmployee;
 begin
   IsLoadingGrid := True;
 
@@ -286,7 +302,7 @@ begin
   gridMain.ScrollBars := ssVertical;
 
   gridMain.ColCount := 5;
-  gridMain.RowCount := Length(ViewEmployeeIndexes) + 1;
+  gridMain.RowCount := ViewEmployeeIndexes.Count + 1;
 
   gridMain.Cells[0, 0] := 'Код';
   gridMain.Cells[1, 0] := 'ФИО';
@@ -300,14 +316,15 @@ begin
   gridMain.ColWidths[3] := 95;
   gridMain.ColWidths[4] := 70;
 
-  for I := 0 to High(ViewEmployeeIndexes) do
+  for I := 0 to ViewEmployeeIndexes.Count - 1 do
   begin
     SourceIndex := ViewEmployeeIndexes[I];
+    EmployeeItem := Employees[SourceIndex];
 
-    gridMain.Cells[0, I + 1] := Employees[SourceIndex].Code;
-    gridMain.Cells[1, I + 1] := Employees[SourceIndex].FullName;
-    gridMain.Cells[2, I + 1] := Employees[SourceIndex].Position;
-    gridMain.Cells[3, I + 1] := IntToStr(Employees[SourceIndex].HoursPerDay);
+    gridMain.Cells[0, I + 1] := EmployeeItem.Code;
+    gridMain.Cells[1, I + 1] := EmployeeItem.FullName;
+    gridMain.Cells[2, I + 1] := EmployeeItem.Position;
+    gridMain.Cells[3, I + 1] := IntToStr(EmployeeItem.HoursPerDay);
     gridMain.Cells[4, I + 1] := 'Удалить';
   end;
 
@@ -316,7 +333,6 @@ begin
   IsLoadingGrid := False;
 end;
 
-// Переключает отображение между квитанциями и сотрудниками.
 procedure TForm1.btnSwitchTableClick(Sender: TObject);
 begin
   if not CommitCurrentCell then
@@ -331,7 +347,6 @@ begin
   CancelSearch;
 end;
 
-// Выполняет поиск по текущей таблице.
 procedure TForm1.btnSearchClick(Sender: TObject);
 begin
   if not CommitCurrentCell then
@@ -340,7 +355,6 @@ begin
   SearchInCurrentTable(edtSearch.Text);
 end;
 
-// Отменяет фильтр поиска и показывает полный список.
 procedure TForm1.btnCancelSearchClick(Sender: TObject);
 begin
   if not CommitCurrentCell then
@@ -350,7 +364,6 @@ begin
   CancelSearch;
 end;
 
-// Добавляет новую запись в активный список.
 procedure TForm1.btnAddClick(Sender: TObject);
 begin
   if not CommitCurrentCell then
@@ -359,7 +372,6 @@ begin
   AddRecordToCurrentTable;
 end;
 
-// Формирует отчёт о готовности заказов за текущие сутки.
 procedure TForm1.btnReadyTodayClick(Sender: TObject);
 begin
   if not CommitCurrentCell then
@@ -368,7 +380,6 @@ begin
   ShowReadyTodayReport;
 end;
 
-// Формирует отчёт по выполненным заказам сотрудников за период.
 procedure TForm1.btnEmployeeReportClick(Sender: TObject);
 begin
   if not CommitCurrentCell then
@@ -377,14 +388,15 @@ begin
   ShowEmployeeReport(dtpFrom.Date, dtpTo.Date);
 end;
 
-// Загружает данные из выбранного текстового файла.
+// Загрузка данных из dat-файла с текстовой структурой строк.
 procedure TForm1.mnuLoadClick(Sender: TObject);
 var
   Dlg: TOpenDialog;
 begin
   Dlg := TOpenDialog.Create(nil);
   try
-    Dlg.Filter := 'Текстовые файлы (*.txt)|*.txt|Все файлы (*.*)|*.*';
+    Dlg.Filter := 'Файлы данных (*.dat)|*.dat|Все файлы (*.*)|*.*';
+    Dlg.DefaultExt := 'dat';
 
     if Dlg.Execute then
     begin
@@ -400,7 +412,6 @@ begin
   end;
 end;
 
-// Сохраняет данные в текущий файл или вызывает «Сохранить как».
 procedure TForm1.mnuSaveClick(Sender: TObject);
 begin
   if not CommitCurrentCell then
@@ -418,7 +429,6 @@ begin
   end;
 end;
 
-// Сохраняет данные в выбранный пользователем файл.
 procedure TForm1.mnuSaveAsClick(Sender: TObject);
 var
   Dlg: TSaveDialog;
@@ -430,8 +440,8 @@ begin
 
   Dlg := TSaveDialog.Create(nil);
   try
-    Dlg.Filter := 'Текстовые файлы (*.txt)|*.txt|Все файлы (*.*)|*.*';
-    Dlg.DefaultExt := 'txt';
+    Dlg.Filter := 'Файлы данных (*.dat)|*.dat|Все файлы (*.*)|*.*';
+    Dlg.DefaultExt := 'dat';
 
     if Dlg.Execute then
     begin
@@ -447,14 +457,12 @@ begin
   end;
 end;
 
-// Закрывает программу без сохранения изменений.
 procedure TForm1.mnuExitNoSaveClick(Sender: TObject);
 begin
   ForceCloseWithoutSaving := True;
   Close;
 end;
 
-// Обрабатывает закрытие окна и предлагает сохранить изменения.
 procedure TForm1.FormCloseQuery(Sender: TObject; var CanClose: Boolean);
 var
   Answer: Integer;
@@ -498,7 +506,7 @@ begin
   end;
 end;
 
-// Диалог с русскими кнопками сохранения при выходе.
+// Диалог выхода с русскими кнопками.
 function TForm1.AskSaveChangesRussian: Integer;
 var
   F: TForm;
@@ -598,26 +606,25 @@ begin
   end;
 end;
 
-// Считывает из файла две секции: квитанции и сотрудники.
+// Чтение dat-файла. Внутренний формат строк остается текстовым.
 procedure TForm1.LoadDataFromFile(const FileName: string);
 var
   Lines: TStringList;
   Parts: TStringList;
   I: Integer;
   Section: string;
-  OrderCount, EmployeeCount: Integer;
+  OrderItem: TOrder;
+  EmployeeItem: TEmployee;
 begin
   Lines := TStringList.Create;
   Parts := TStringList.Create;
   try
     Lines.LoadFromFile(FileName, TEncoding.UTF8);
 
-    SetLength(Orders, 0);
-    SetLength(Employees, 0);
+    Orders.Clear;
+    Employees.Clear;
 
     Section := '';
-    OrderCount := 0;
-    EmployeeCount := 0;
 
     for I := 0 to Lines.Count - 1 do
     begin
@@ -642,29 +649,25 @@ begin
       begin
         if Parts.Count >= 5 then
         begin
-          SetLength(Orders, OrderCount + 1);
+          OrderItem.GroupName := UnescapeField(Parts[0]);
+          OrderItem.Brand := UnescapeField(Parts[1]);
+          OrderItem.AcceptDate := UnescapeField(Parts[2]);
+          OrderItem.EmployeeCode := UnescapeField(Parts[3]);
+          OrderItem.IsDone := Parts[4] = '1';
 
-          Orders[OrderCount].GroupName := UnescapeField(Parts[0]);
-          Orders[OrderCount].Brand := UnescapeField(Parts[1]);
-          Orders[OrderCount].AcceptDate := UnescapeField(Parts[2]);
-          Orders[OrderCount].EmployeeCode := UnescapeField(Parts[3]);
-          Orders[OrderCount].IsDone := Parts[4] = '1';
-
-          Inc(OrderCount);
+          Orders.Add(OrderItem);
         end;
       end
       else if SameText(Section, 'EMPLOYEES') then
       begin
         if Parts.Count >= 4 then
         begin
-          SetLength(Employees, EmployeeCount + 1);
+          EmployeeItem.Code := UnescapeField(Parts[0]);
+          EmployeeItem.FullName := UnescapeField(Parts[1]);
+          EmployeeItem.Position := UnescapeField(Parts[2]);
+          EmployeeItem.HoursPerDay := StrToIntDef(Parts[3], 0);
 
-          Employees[EmployeeCount].Code := UnescapeField(Parts[0]);
-          Employees[EmployeeCount].FullName := UnescapeField(Parts[1]);
-          Employees[EmployeeCount].Position := UnescapeField(Parts[2]);
-          Employees[EmployeeCount].HoursPerDay := StrToIntDef(Parts[3], 0);
-
-          Inc(EmployeeCount);
+          Employees.Add(EmployeeItem);
         end;
       end;
     end;
@@ -676,37 +679,43 @@ begin
   end;
 end;
 
-// Записывает обе таблицы в один текстовый файл.
+// Сохранение данных в dat-файл с тем же текстовым содержимым.
 procedure TForm1.SaveDataToFile(const FileName: string);
 var
   Lines: TStringList;
   I: Integer;
+  OrderItem: TOrder;
+  EmployeeItem: TEmployee;
 begin
   Lines := TStringList.Create;
   try
     Lines.Add('[ORDERS]');
 
-    for I := 0 to High(Orders) do
+    for I := 0 to Orders.Count - 1 do
     begin
+      OrderItem := Orders[I];
+
       Lines.Add(
-        EscapeField(Orders[I].GroupName) + ';' +
-        EscapeField(Orders[I].Brand) + ';' +
-        EscapeField(Orders[I].AcceptDate) + ';' +
-        EscapeField(Orders[I].EmployeeCode) + ';' +
-        BoolToFileText(Orders[I].IsDone)
+        EscapeField(OrderItem.GroupName) + ';' +
+        EscapeField(OrderItem.Brand) + ';' +
+        EscapeField(OrderItem.AcceptDate) + ';' +
+        EscapeField(OrderItem.EmployeeCode) + ';' +
+        BoolToFileText(OrderItem.IsDone)
       );
     end;
 
     Lines.Add('');
     Lines.Add('[EMPLOYEES]');
 
-    for I := 0 to High(Employees) do
+    for I := 0 to Employees.Count - 1 do
     begin
+      EmployeeItem := Employees[I];
+
       Lines.Add(
-        EscapeField(Employees[I].Code) + ';' +
-        EscapeField(Employees[I].FullName) + ';' +
-        EscapeField(Employees[I].Position) + ';' +
-        IntToStr(Employees[I].HoursPerDay)
+        EscapeField(EmployeeItem.Code) + ';' +
+        EscapeField(EmployeeItem.FullName) + ';' +
+        EscapeField(EmployeeItem.Position) + ';' +
+        IntToStr(EmployeeItem.HoursPerDay)
       );
     end;
 
@@ -716,10 +725,10 @@ begin
   end;
 end;
 
-// Выполняет поиск подстроки по активному списку.
+// Фильтрация текущего списка по подстроке.
 procedure TForm1.SearchInCurrentTable(const SearchText: string);
 var
-  I, Count: Integer;
+  I: Integer;
   S: string;
 begin
   S := AnsiLowerCase(Trim(SearchText));
@@ -733,41 +742,26 @@ begin
 
   if CurrentTable = ctOrders then
   begin
-    SetLength(ViewOrderIndexes, 0);
-    Count := 0;
+    ViewOrderIndexes.Clear;
 
-    for I := 0 to High(Orders) do
-    begin
+    for I := 0 to Orders.Count - 1 do
       if OrderContainsText(Orders[I], S) then
-      begin
-        SetLength(ViewOrderIndexes, Count + 1);
-        ViewOrderIndexes[Count] := I;
-        Inc(Count);
-      end;
-    end;
+        ViewOrderIndexes.Add(I);
 
     ShowOrdersTable;
   end
   else
   begin
-    SetLength(ViewEmployeeIndexes, 0);
-    Count := 0;
+    ViewEmployeeIndexes.Clear;
 
-    for I := 0 to High(Employees) do
-    begin
+    for I := 0 to Employees.Count - 1 do
       if EmployeeContainsText(Employees[I], S) then
-      begin
-        SetLength(ViewEmployeeIndexes, Count + 1);
-        ViewEmployeeIndexes[Count] := I;
-        Inc(Count);
-      end;
-    end;
+        ViewEmployeeIndexes.Add(I);
 
     ShowEmployeesTable;
   end;
 end;
 
-// Сбрасывает фильтрацию и возвращает полный список записей.
 procedure TForm1.CancelSearch;
 begin
   IsFiltered := False;
@@ -779,41 +773,40 @@ begin
     ShowEmployeesTable;
 end;
 
-// Добавляет пустую запись в активную таблицу.
+// Добавление новой записи в активный динамический список.
 procedure TForm1.AddRecordToCurrentTable;
 var
-  N: Integer;
+  OrderItem: TOrder;
+  EmployeeItem: TEmployee;
 begin
   if CurrentTable = ctOrders then
   begin
-    N := Length(Orders);
-    SetLength(Orders, N + 1);
+    OrderItem.GroupName := '';
+    OrderItem.Brand := '';
+    OrderItem.AcceptDate := FormatDateTime('dd.mm.yyyy', Date);
+    OrderItem.EmployeeCode := '';
+    OrderItem.IsDone := False;
 
-    Orders[N].GroupName := '';
-    Orders[N].Brand := '';
-    Orders[N].AcceptDate := FormatDateTime('dd.mm.yyyy', Date);
-    Orders[N].EmployeeCode := '';
-    Orders[N].IsDone := False;
+    Orders.Add(OrderItem);
   end
   else
   begin
-    N := Length(Employees);
-    SetLength(Employees, N + 1);
+    EmployeeItem.Code := GenerateNextEmployeeCode;
+    EmployeeItem.FullName := '';
+    EmployeeItem.Position := '';
+    EmployeeItem.HoursPerDay := 0;
 
-    Employees[N].Code := GenerateNextEmployeeCode;
-    Employees[N].FullName := '';
-    Employees[N].Position := '';
-    Employees[N].HoursPerDay := 0;
+    Employees.Add(EmployeeItem);
   end;
 
   IsModified := True;
   CancelSearch;
 end;
 
-// Удаляет выбранную запись после подтверждения пользователя.
+// Удаление записи из активного динамического списка.
 procedure TForm1.DeleteRecordFromCurrentTable(VisibleRow: Integer);
 var
-  SourceIndex, I: Integer;
+  SourceIndex: Integer;
 begin
   if VisibleRow <= 0 then
     Exit;
@@ -823,40 +816,31 @@ begin
 
   if CurrentTable = ctOrders then
   begin
-    if VisibleRow - 1 > High(ViewOrderIndexes) then
+    if VisibleRow - 1 >= ViewOrderIndexes.Count then
       Exit;
 
     SourceIndex := ViewOrderIndexes[VisibleRow - 1];
-
-    for I := SourceIndex to High(Orders) - 1 do
-      Orders[I] := Orders[I + 1];
-
-    SetLength(Orders, Length(Orders) - 1);
+    Orders.Delete(SourceIndex);
   end
   else
   begin
-    if VisibleRow - 1 > High(ViewEmployeeIndexes) then
+    if VisibleRow - 1 >= ViewEmployeeIndexes.Count then
       Exit;
 
     SourceIndex := ViewEmployeeIndexes[VisibleRow - 1];
-
-    for I := SourceIndex to High(Employees) - 1 do
-      Employees[I] := Employees[I + 1];
-
-    SetLength(Employees, Length(Employees) - 1);
+    Employees.Delete(SourceIndex);
   end;
 
   IsModified := True;
   RefreshCurrentTable;
 end;
 
-// Сохраняет текущее значение редактируемой ячейки.
 function TForm1.CommitCurrentCell: Boolean;
 begin
   Result := CommitGridCell(gridMain.Col, gridMain.Row);
 end;
 
-// Проверяет введённое значение и переносит его из таблицы в массив.
+// Проверка и сохранение значения из редактируемой ячейки.
 function TForm1.CommitGridCell(ACol, ARow: Integer): Boolean;
 var
   SourceIndex: Integer;
@@ -865,6 +849,8 @@ var
   ParsedDate: TDate;
   Hours: Integer;
   ReadyValue: Boolean;
+  OrderItem: TOrder;
+  EmployeeItem: TEmployee;
 begin
   Result := True;
 
@@ -878,17 +864,18 @@ begin
 
   if CurrentTable = ctOrders then
   begin
-    if ARow - 1 > High(ViewOrderIndexes) then
+    if ARow - 1 >= ViewOrderIndexes.Count then
       Exit;
 
     SourceIndex := ViewOrderIndexes[ARow - 1];
+    OrderItem := Orders[SourceIndex];
 
     case ACol of
       0:
-        Orders[SourceIndex].GroupName := Value;
+        OrderItem.GroupName := Value;
 
       1:
-        Orders[SourceIndex].Brand := Value;
+        OrderItem.Brand := Value;
 
       2:
         begin
@@ -900,7 +887,7 @@ begin
             Exit;
           end;
 
-          Orders[SourceIndex].AcceptDate := FormatDateTime('dd.mm.yyyy', ParsedDate);
+          OrderItem.AcceptDate := FormatDateTime('dd.mm.yyyy', ParsedDate);
         end;
 
       4:
@@ -913,16 +900,19 @@ begin
             Exit;
           end;
 
-          Orders[SourceIndex].IsDone := ReadyValue;
+          OrderItem.IsDone := ReadyValue;
         end;
     end;
+
+    Orders[SourceIndex] := OrderItem;
   end
   else
   begin
-    if ARow - 1 > High(ViewEmployeeIndexes) then
+    if ARow - 1 >= ViewEmployeeIndexes.Count then
       Exit;
 
     SourceIndex := ViewEmployeeIndexes[ARow - 1];
+    EmployeeItem := Employees[SourceIndex];
 
     case ACol of
       0:
@@ -951,16 +941,17 @@ begin
             Exit;
           end;
 
-          OldCode := Employees[SourceIndex].Code;
-          Employees[SourceIndex].Code := Value;
+          OldCode := EmployeeItem.Code;
+          EmployeeItem.Code := Value;
+          Employees[SourceIndex] := EmployeeItem;
           UpdateEmployeeCodeInOrders(OldCode, Value);
         end;
 
       1:
-        Employees[SourceIndex].FullName := Value;
+        EmployeeItem.FullName := Value;
 
       2:
-        Employees[SourceIndex].Position := Value;
+        EmployeeItem.Position := Value;
 
       3:
         begin
@@ -990,16 +981,17 @@ begin
             Exit;
           end;
 
-          Employees[SourceIndex].HoursPerDay := Hours;
+          EmployeeItem.HoursPerDay := Hours;
         end;
     end;
+
+    Employees[SourceIndex] := EmployeeItem;
   end;
 
   IsModified := True;
   RefreshCurrentTable;
 end;
 
-// Обрабатывает клики по таблице: сортировка, удаление, выбор сотрудника и готовности.
 procedure TForm1.gridMainMouseDown(Sender: TObject; Button: TMouseButton;
   Shift: TShiftState; X, Y: Integer);
 var
@@ -1007,6 +999,7 @@ var
   SourceIndex: Integer;
   NewCode: string;
   NewReady: Boolean;
+  OrderItem: TOrder;
 begin
   gridMain.MouseToCell(X, Y, ACol, ARow);
 
@@ -1038,16 +1031,18 @@ begin
       if not CommitCurrentCell then
         Exit;
 
-      if ARow - 1 > High(ViewOrderIndexes) then
+      if ARow - 1 >= ViewOrderIndexes.Count then
         Exit;
 
       SourceIndex := ViewOrderIndexes[ARow - 1];
+      OrderItem := Orders[SourceIndex];
 
       NewCode := SelectEmployeeCode;
 
       if NewCode <> '' then
       begin
-        Orders[SourceIndex].EmployeeCode := NewCode;
+        OrderItem.EmployeeCode := NewCode;
+        Orders[SourceIndex] := OrderItem;
         IsModified := True;
         RefreshCurrentTable;
       end;
@@ -1060,15 +1055,17 @@ begin
       if not CommitCurrentCell then
         Exit;
 
-      if ARow - 1 > High(ViewOrderIndexes) then
+      if ARow - 1 >= ViewOrderIndexes.Count then
         Exit;
 
       SourceIndex := ViewOrderIndexes[ARow - 1];
-      NewReady := Orders[SourceIndex].IsDone;
+      OrderItem := Orders[SourceIndex];
+      NewReady := OrderItem.IsDone;
 
       if SelectReadyStatus(NewReady) then
       begin
-        Orders[SourceIndex].IsDone := NewReady;
+        OrderItem.IsDone := NewReady;
+        Orders[SourceIndex] := OrderItem;
         IsModified := True;
         RefreshCurrentTable;
       end;
@@ -1089,7 +1086,6 @@ begin
   end;
 end;
 
-// Управляет возможностью редактирования выбранных ячеек.
 procedure TForm1.gridMainSelectCell(Sender: TObject; ACol, ARow: Integer;
   var CanSelect: Boolean);
 begin
@@ -1130,7 +1126,6 @@ begin
   end;
 end;
 
-// Фиксирует факт изменения текста в таблице.
 procedure TForm1.gridMainSetEditText(Sender: TObject; ACol, ARow: Integer;
   const Value: string);
 begin
@@ -1140,18 +1135,15 @@ begin
   IsModified := True;
 end;
 
-// Проверяет последнюю редактируемую ячейку при уходе фокуса с таблицы.
 procedure TForm1.gridMainExit(Sender: TObject);
 begin
   CommitCurrentCell;
 end;
 
-// Сортирует активный массив по выбранному столбцу.
+// Сортировка активного динамического списка по выбранному столбцу.
 procedure TForm1.SortCurrentTableByColumn(ACol: Integer);
 var
   I, J: Integer;
-  TempOrder: TOrder;
-  TempEmployee: TEmployee;
 
   function CompareDates(const A, B: string): Integer;
   var
@@ -1206,35 +1198,27 @@ begin
     if ACol = 5 then
       Exit;
 
-    for I := 0 to High(Orders) - 1 do
-      for J := I + 1 to High(Orders) do
+    for I := 0 to Orders.Count - 2 do
+      for J := I + 1 to Orders.Count - 1 do
         if CompareOrders(Orders[I], Orders[J]) > 0 then
-        begin
-          TempOrder := Orders[I];
-          Orders[I] := Orders[J];
-          Orders[J] := TempOrder;
-        end;
+          Orders.Exchange(I, J);
   end
   else
   begin
     if ACol = 4 then
       Exit;
 
-    for I := 0 to High(Employees) - 1 do
-      for J := I + 1 to High(Employees) do
+    for I := 0 to Employees.Count - 2 do
+      for J := I + 1 to Employees.Count - 1 do
         if CompareEmployees(Employees[I], Employees[J]) > 0 then
-        begin
-          TempEmployee := Employees[I];
-          Employees[I] := Employees[J];
-          Employees[J] := TempEmployee;
-        end;
+          Employees.Exchange(I, J);
   end;
 
   IsModified := True;
   RefreshCurrentTable;
 end;
 
-// Отрисовывает ячейки таблицы и кнопку удаления в последнем столбце.
+// Отрисовка ячеек и псевдокнопок удаления.
 procedure TForm1.gridMainDrawCell(Sender: TObject; ACol, ARow: Integer;
   Rect: TRect; State: TGridDrawState);
 var
@@ -1282,13 +1266,14 @@ begin
   end;
 end;
 
-// Открывает отдельное окно для выбора сотрудника.
+// Окно выбора сотрудника для квитанции.
 function TForm1.SelectEmployeeCode: string;
 var
   F: TForm;
   G: TStringGrid;
   BtnOk, BtnCancel: TButton;
   I: Integer;
+  EmployeeItem: TEmployee;
 begin
   Result := '';
 
@@ -1307,17 +1292,18 @@ begin
     G.FixedCols := 0;
     G.ScrollBars := ssVertical;
     G.ColCount := 2;
-    G.RowCount := Length(Employees) + 1;
+    G.RowCount := Employees.Count + 1;
     G.Options := G.Options + [goRowSelect];
     G.Cells[0, 0] := 'Код';
     G.Cells[1, 0] := 'ФИО';
     G.ColWidths[0] := 100;
     G.ColWidths[1] := 280;
 
-    for I := 0 to High(Employees) do
+    for I := 0 to Employees.Count - 1 do
     begin
-      G.Cells[0, I + 1] := Employees[I].Code;
-      G.Cells[1, I + 1] := Employees[I].FullName;
+      EmployeeItem := Employees[I];
+      G.Cells[0, I + 1] := EmployeeItem.Code;
+      G.Cells[1, I + 1] := EmployeeItem.FullName;
     end;
 
     BtnOk := TButton.Create(F);
@@ -1337,16 +1323,14 @@ begin
     BtnCancel.Width := 90;
 
     if F.ShowModal = mrOk then
-    begin
       if G.Row > 0 then
         Result := G.Cells[0, G.Row];
-    end;
   finally
     F.Free;
   end;
 end;
 
-// Открывает окно выбора состояния готовности заказа.
+// Окно выбора состояния готовности заказа.
 function TForm1.SelectReadyStatus(var Ready: Boolean): Boolean;
 var
   F: TForm;
@@ -1410,102 +1394,114 @@ begin
   end;
 end;
 
-// Возвращает ФИО сотрудника по его коду.
 function TForm1.GetEmployeeFullNameByCode(const Code: string): string;
 var
   I: Integer;
+  EmployeeItem: TEmployee;
 begin
   Result := '';
 
-  for I := 0 to High(Employees) do
+  for I := 0 to Employees.Count - 1 do
   begin
-    if Employees[I].Code = Code then
+    EmployeeItem := Employees[I];
+    if EmployeeItem.Code = Code then
     begin
-      Result := Employees[I].FullName;
+      Result := EmployeeItem.FullName;
       Exit;
     end;
   end;
 end;
 
-// Обновляет код сотрудника во всех квитанциях.
+// Обновляет ссылки на сотрудника в квитанциях при смене его кода.
 procedure TForm1.UpdateEmployeeCodeInOrders(const OldCode, NewCode: string);
 var
   I: Integer;
+  OrderItem: TOrder;
 begin
   if OldCode = NewCode then
     Exit;
 
-  for I := 0 to High(Orders) do
-    if Orders[I].EmployeeCode = OldCode then
-      Orders[I].EmployeeCode := NewCode;
-end;
-
-// Формирует отчёт о состоянии заказов за текущий день по группам изделий.
-procedure TForm1.ShowReadyTodayReport;
-var
-  Groups: TStringList;
-  Total, Done, NotDone: array of Integer;
-  I, Index: Integer;
-  Today: TDate;
-  Data: TStringMatrix;
-begin
-  Groups := TStringList.Create;
-  try
-    Today := Date;
-
-    for I := 0 to High(Orders) do
+  for I := 0 to Orders.Count - 1 do
+  begin
+    OrderItem := Orders[I];
+    if OrderItem.EmployeeCode = OldCode then
     begin
-      if not IsSameRuDate(Orders[I].AcceptDate, Today) then
-        Continue;
-
-      Index := Groups.IndexOf(Orders[I].GroupName);
-
-      if Index = -1 then
-      begin
-        Groups.Add(Orders[I].GroupName);
-
-        SetLength(Total, Groups.Count);
-        SetLength(Done, Groups.Count);
-        SetLength(NotDone, Groups.Count);
-
-        Index := Groups.Count - 1;
-      end;
-
-      Inc(Total[Index]);
-
-      if Orders[I].IsDone then
-        Inc(Done[Index])
-      else
-        Inc(NotDone[Index]);
+      OrderItem.EmployeeCode := NewCode;
+      Orders[I] := OrderItem;
     end;
-
-    SetLength(Data, Groups.Count);
-
-    for I := 0 to Groups.Count - 1 do
-    begin
-      SetLength(Data[I], 4);
-      Data[I][0] := Groups[I];
-      Data[I][1] := IntToStr(Total[I]);
-      Data[I][2] := IntToStr(Done[I]);
-      Data[I][3] := IntToStr(NotDone[I]);
-    end;
-
-    CreateReportWindow(
-      'Состояние готовности заказов на текущие сутки',
-      ['Группа изделия', 'Всего за сегодня', 'Выполнено', 'Не выполнено'],
-      Data
-    );
-  finally
-    Groups.Free;
   end;
 end;
 
-// Формирует отчёт о числе выполненных заказов по сотрудникам за период.
+// Отчёт по готовности заказов за текущие сутки.
+procedure TForm1.ShowReadyTodayReport;
+var
+  Groups: TStringList;
+  Total, Done, NotDone: TList<Integer>;
+  DataRows: TStringList;
+  I, Index: Integer;
+  Today: TDate;
+  OrderItem: TOrder;
+begin
+  Groups := TStringList.Create;
+  Total := TList<Integer>.Create;
+  Done := TList<Integer>.Create;
+  NotDone := TList<Integer>.Create;
+  DataRows := TStringList.Create;
+  try
+    Today := Date;
+
+    for I := 0 to Orders.Count - 1 do
+    begin
+      OrderItem := Orders[I];
+
+      if not IsSameRuDate(OrderItem.AcceptDate, Today) then
+        Continue;
+
+      Index := Groups.IndexOf(OrderItem.GroupName);
+
+      if Index = -1 then
+      begin
+        Groups.Add(OrderItem.GroupName);
+        Total.Add(0);
+        Done.Add(0);
+        NotDone.Add(0);
+        Index := Groups.Count - 1;
+      end;
+
+      Total[Index] := Total[Index] + 1;
+
+      if OrderItem.IsDone then
+        Done[Index] := Done[Index] + 1
+      else
+        NotDone[Index] := NotDone[Index] + 1;
+    end;
+
+    for I := 0 to Groups.Count - 1 do
+      DataRows.Add(Groups[I] + ';' + IntToStr(Total[I]) + ';' +
+        IntToStr(Done[I]) + ';' + IntToStr(NotDone[I]));
+
+    CreateReportWindow(
+      'Состояние готовности заказов на текущие сутки',
+      'Группа изделия;Всего за сегодня;Выполнено;Не выполнено',
+      DataRows
+    );
+  finally
+    Groups.Free;
+    Total.Free;
+    Done.Free;
+    NotDone.Free;
+    DataRows.Free;
+  end;
+end;
+
+// Отчёт о выполненных заказах по сотрудникам за период.
 procedure TForm1.ShowEmployeeReport(DateFrom, DateTo: TDate);
 var
   I, J, CountDone: Integer;
   D: TDate;
-  Data: TStringMatrix;
+  DataRows: TStringList;
+  EmployeeItem: TEmployee;
+  OrderItem: TOrder;
 begin
   if DateFrom > DateTo then
   begin
@@ -1513,50 +1509,56 @@ begin
     Exit;
   end;
 
-  SetLength(Data, Length(Employees));
-
-  for I := 0 to High(Employees) do
-  begin
-    CountDone := 0;
-
-    for J := 0 to High(Orders) do
+  DataRows := TStringList.Create;
+  try
+    for I := 0 to Employees.Count - 1 do
     begin
-      if not Orders[J].IsDone then
-        Continue;
+      EmployeeItem := Employees[I];
+      CountDone := 0;
 
-      if Orders[J].EmployeeCode <> Employees[I].Code then
-        Continue;
-
-      if TryParseDateRu(Orders[J].AcceptDate, D) then
+      for J := 0 to Orders.Count - 1 do
       begin
-        if (D >= DateFrom) and (D <= DateTo) then
-          Inc(CountDone);
+        OrderItem := Orders[J];
+
+        if not OrderItem.IsDone then
+          Continue;
+
+        if OrderItem.EmployeeCode <> EmployeeItem.Code then
+          Continue;
+
+        if TryParseDateRu(OrderItem.AcceptDate, D) then
+          if (D >= DateFrom) and (D <= DateTo) then
+            Inc(CountDone);
       end;
+
+      DataRows.Add(EscapeField(EmployeeItem.Code) + ';' +
+        EscapeField(EmployeeItem.FullName) + ';' +
+        EscapeField(EmployeeItem.Position) + ';' +
+        IntToStr(CountDone));
     end;
 
-    SetLength(Data[I], 4);
-    Data[I][0] := Employees[I].Code;
-    Data[I][1] := Employees[I].FullName;
-    Data[I][2] := Employees[I].Position;
-    Data[I][3] := IntToStr(CountDone);
+    CreateReportWindow(
+      'Число выполненных заказов по сотрудникам',
+      'Код;ФИО;Должность;Выполнено заказов',
+      DataRows
+    );
+  finally
+    DataRows.Free;
   end;
-
-  CreateReportWindow(
-    'Число выполненных заказов по сотрудникам',
-    ['Код', 'ФИО', 'Должность', 'Выполнено заказов'],
-    Data
-  );
 end;
 
-// Создаёт отдельное окно для отображения сформированного отчёта.
-procedure TForm1.CreateReportWindow(const Title: string; const Headers: array of string;
-  const Data: TStringMatrix);
+// Создаёт отдельное окно с табличным отчётом.
+procedure TForm1.CreateReportWindow(const Title, HeaderLine: string; DataRows: TStrings);
 var
   F: TForm;
   G: TStringGrid;
+  Headers: TStringList;
+  Parts: TStringList;
   I, J: Integer;
 begin
   F := TForm.Create(nil);
+  Headers := TStringList.Create;
+  Parts := TStringList.Create;
   try
     F.Caption := Title;
     F.Width := 700;
@@ -1569,8 +1571,10 @@ begin
     G.FixedRows := 1;
     G.FixedCols := 0;
     G.ScrollBars := ssVertical;
-    G.ColCount := Length(Headers);
-    G.RowCount := Length(Data) + 1;
+
+    SplitLine(HeaderLine, Headers);
+    G.ColCount := Headers.Count;
+    G.RowCount := DataRows.Count + 1;
 
     G.Options := G.Options + [
       goColSizing,
@@ -1580,23 +1584,28 @@ begin
       goHorzLine
     ];
 
-    for I := 0 to High(Headers) do
+    for I := 0 to Headers.Count - 1 do
     begin
       G.Cells[I, 0] := Headers[I];
       G.ColWidths[I] := 150;
     end;
 
-    for I := 0 to High(Data) do
-      for J := 0 to High(Data[I]) do
-        G.Cells[J, I + 1] := Data[I][J];
+    for I := 0 to DataRows.Count - 1 do
+    begin
+      SplitLine(DataRows[I], Parts);
+      for J := 0 to Parts.Count - 1 do
+        if J < G.ColCount then
+          G.Cells[J, I + 1] := Parts[J];
+    end;
 
     F.ShowModal;
   finally
+    Parts.Free;
+    Headers.Free;
     F.Free;
   end;
 end;
 
-// Проверяет, содержит ли запись квитанции искомую подстроку.
 function TForm1.OrderContainsText(const Order: TOrder; const SearchText: string): Boolean;
 var
   S: string;
@@ -1618,7 +1627,6 @@ begin
   Result := Pos(S, AnsiLowerCase(BoolToReadyText(Order.IsDone))) > 0;
 end;
 
-// Проверяет, содержит ли запись сотрудника искомую подстроку.
 function TForm1.EmployeeContainsText(const Employee: TEmployee; const SearchText: string): Boolean;
 var
   S: string;
@@ -1637,7 +1645,6 @@ begin
   Result := Pos(S, AnsiLowerCase(IntToStr(Employee.HoursPerDay))) > 0;
 end;
 
-// Преобразует логическое значение готовности в текст для таблицы.
 function TForm1.BoolToReadyText(Value: Boolean): string;
 begin
   if Value then
@@ -1646,7 +1653,6 @@ begin
     Result := 'Не выполнен';
 end;
 
-// Преобразует текст готовности в логическое значение.
 function TForm1.ReadyTextToBool(const S: string; out Value: Boolean): Boolean;
 var
   T: string;
@@ -1670,7 +1676,6 @@ begin
   end;
 end;
 
-// Преобразует готовность в формат хранения в файле.
 function TForm1.BoolToFileText(Value: Boolean): string;
 begin
   if Value then
@@ -1679,7 +1684,6 @@ begin
     Result := '0';
 end;
 
-// Проверяет и преобразует дату в формате дд.мм.гггг.
 function TForm1.TryParseDateRu(const S: string; out D: TDate): Boolean;
 var
   DayPart, MonthPart, YearPart: Integer;
@@ -1690,12 +1694,10 @@ begin
   D := 0;
 
   P1 := Pos('.', S);
-  if P1 = 0 then
-    Exit;
+  if P1 = 0 then Exit;
 
   P2 := PosEx('.', S, P1 + 1);
-  if P2 = 0 then
-    Exit;
+  if P2 = 0 then Exit;
 
   StrDay := Copy(S, 1, P1 - 1);
   StrMonth := Copy(S, P1 + 1, P2 - P1 - 1);
@@ -1713,7 +1715,6 @@ begin
   end;
 end;
 
-// Проверяет, совпадает ли дата из строки с указанной датой.
 function TForm1.IsSameRuDate(const S: string; D: TDate): Boolean;
 var
   ParsedDate: TDate;
@@ -1721,7 +1722,6 @@ begin
   Result := TryParseDateRu(S, ParsedDate) and SameDate(ParsedDate, D);
 end;
 
-// Проверяет, состоит ли строка только из цифр.
 function TForm1.IsDigitsOnly(const S: string): Boolean;
 var
   I: Integer;
@@ -1736,14 +1736,13 @@ begin
     end;
 end;
 
-// Проверяет, существует ли сотрудник с таким кодом.
 function TForm1.EmployeeCodeExists(const Code: string; ExceptIndex: Integer): Boolean;
 var
   I: Integer;
 begin
   Result := False;
 
-  for I := 0 to High(Employees) do
+  for I := 0 to Employees.Count - 1 do
   begin
     if I = ExceptIndex then
       Continue;
@@ -1756,17 +1755,15 @@ begin
   end;
 end;
 
-// Генерирует следующий свободный числовой код сотрудника.
 function TForm1.GenerateNextEmployeeCode: string;
 var
   I, N, MaxCode: Integer;
 begin
   MaxCode := 0;
 
-  for I := 0 to High(Employees) do
+  for I := 0 to Employees.Count - 1 do
   begin
     N := StrToIntDef(Employees[I].Code, 0);
-
     if N > MaxCode then
       MaxCode := N;
   end;
@@ -1780,7 +1777,7 @@ begin
   end;
 end;
 
-// Делит строку файла на поля по символу «;».
+// Разделяет строку файла по символу ';'.
 procedure TForm1.SplitLine(const S: string; Parts: TStrings);
 var
   I: Integer;
@@ -1803,17 +1800,14 @@ begin
   Parts.Add(Current);
 end;
 
-// Подготавливает поле к записи в текстовый файл.
 function TForm1.EscapeField(const S: string): string;
 begin
   Result := StringReplace(S, ';', ',', [rfReplaceAll]);
 end;
 
-// Возвращает поле из файла без дополнительной обработки.
 function TForm1.UnescapeField(const S: string): string;
 begin
   Result := S;
 end;
 
 end.
-
