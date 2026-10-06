@@ -8,7 +8,6 @@ uses
   System.Classes,
   System.StrUtils,
   System.DateUtils,
-  System.Generics.Collections,
   Vcl.Graphics,
   Vcl.Controls,
   Vcl.Forms,
@@ -34,6 +33,110 @@ type
     FullName: string;
     Position: string;
     HoursPerDay: Integer;
+  end;
+
+  // Узлы собственных односвязных списков. Память выделяется через New и освобождается через Dispose.
+  POrderNode = ^TOrderNode;
+  TOrderNode = record
+    Data: TOrder;
+    Next: POrderNode;
+  end;
+
+  PEmployeeNode = ^TEmployeeNode;
+  TEmployeeNode = record
+    Data: TEmployee;
+    Next: PEmployeeNode;
+  end;
+
+  PIntNode = ^TIntNode;
+  TIntNode = record
+    Data: Integer;
+    Next: PIntNode;
+  end;
+
+  // Собственный динамический список квитанций.
+  TOrderLinkedList = class
+  private
+    FHead: POrderNode;
+    FTail: POrderNode;
+    FCount: Integer;
+    function GetNode(Index: Integer): POrderNode;
+    function GetItem(Index: Integer): TOrder;
+    procedure SetItem(Index: Integer; const Value: TOrder);
+  public
+    constructor Create;
+    destructor Destroy; override;
+    procedure Clear;
+    procedure Add(const Value: TOrder);
+    procedure Delete(Index: Integer);
+    procedure Exchange(Index1, Index2: Integer);
+    property Count: Integer read FCount;
+    property Items[Index: Integer]: TOrder read GetItem write SetItem; default;
+  end;
+
+  // Собственный динамический список сотрудников.
+  TEmployeeLinkedList = class
+  private
+    FHead: PEmployeeNode;
+    FTail: PEmployeeNode;
+    FCount: Integer;
+    function GetNode(Index: Integer): PEmployeeNode;
+    function GetItem(Index: Integer): TEmployee;
+    procedure SetItem(Index: Integer; const Value: TEmployee);
+  public
+    constructor Create;
+    destructor Destroy; override;
+    procedure Clear;
+    procedure Add(const Value: TEmployee);
+    procedure Delete(Index: Integer);
+    procedure Exchange(Index1, Index2: Integer);
+    property Count: Integer read FCount;
+    property Items[Index: Integer]: TEmployee read GetItem write SetItem; default;
+  end;
+
+  // Собственный динамический список целочисленных индексов.
+  TIntLinkedList = class
+  private
+    FHead: PIntNode;
+    FTail: PIntNode;
+    FCount: Integer;
+    function GetNode(Index: Integer): PIntNode;
+    function GetItem(Index: Integer): Integer;
+    procedure SetItem(Index: Integer; const Value: Integer);
+  public
+    constructor Create;
+    destructor Destroy; override;
+    procedure Clear;
+    procedure Add(const Value: Integer);
+    procedure Delete(Index: Integer);
+    procedure Exchange(Index1, Index2: Integer);
+    property Count: Integer read FCount;
+    property Items[Index: Integer]: Integer read GetItem write SetItem; default;
+  end;
+
+  // Фиксированные строки и запись для типизированного dat-файла.
+  // В файле хранятся записи TRepairFileRecord через конструкцию file of.
+  TFileString10 = array[0..10] of Char;
+  TFileString20 = array[0..20] of Char;
+  TFileString50 = array[0..50] of Char;
+  TFileString80 = array[0..80] of Char;
+  TFileString100 = array[0..100] of Char;
+
+  TRepairFileRecordKind = (rkOrder, rkEmployee);
+
+  TRepairFileRecord = record
+    Kind: TRepairFileRecordKind;
+
+    OrderGroupName: TFileString80;
+    OrderBrand: TFileString80;
+    OrderAcceptDate: TFileString10;
+    OrderEmployeeCode: TFileString20;
+    OrderIsDone: Boolean;
+
+    EmployeeCode: TFileString20;
+    EmployeeFullName: TFileString100;
+    EmployeePosition: TFileString80;
+    EmployeeHoursPerDay: Integer;
   end;
 
   // Определяет, какая таблица сейчас отображается на форме.
@@ -84,13 +187,13 @@ type
     procedure gridMainExit(Sender: TObject);
 
   private
-    // Основные динамические списки данных программы.
-    Orders: TList<TOrder>;
-    Employees: TList<TEmployee>;
+    // Собственные динамические списки данных на базе указателей.
+    Orders: TOrderLinkedList;
+    Employees: TEmployeeLinkedList;
 
-    // Списки индексов строк, отображаемых в таблице после фильтрации.
-    ViewOrderIndexes: TList<Integer>;
-    ViewEmployeeIndexes: TList<Integer>;
+    // Собственные списки индексов строк, отображаемых после фильтрации.
+    ViewOrderIndexes: TIntLinkedList;
+    ViewEmployeeIndexes: TIntLinkedList;
 
     CurrentTable: TCurrentTable;
     CurrentFileName: string;
@@ -161,6 +264,383 @@ implementation
 
 {$R *.dfm}
 
+procedure ClearFileRecord(var FileRecord: TRepairFileRecord);
+begin
+  FillChar(FileRecord, SizeOf(TRepairFileRecord), 0);
+end;
+
+procedure StringToFixedChars(const S: string; var Dest: array of Char);
+var
+  I, MaxLen: Integer;
+begin
+  for I := 0 to High(Dest) do
+    Dest[I] := #0;
+
+  MaxLen := Length(S);
+  if MaxLen > Length(Dest) - 1 then
+    MaxLen := Length(Dest) - 1;
+
+  for I := 1 to MaxLen do
+    Dest[I - 1] := S[I];
+end;
+
+function FixedCharsToString(const Src: array of Char): string;
+var
+  I: Integer;
+begin
+  Result := '';
+
+  for I := 0 to High(Src) do
+  begin
+    if Src[I] = #0 then
+      Break;
+
+    Result := Result + Src[I];
+  end;
+end;
+
+constructor TOrderLinkedList.Create;
+begin
+  inherited Create;
+  FHead := nil;
+  FTail := nil;
+  FCount := 0;
+end;
+
+destructor TOrderLinkedList.Destroy;
+begin
+  Clear;
+  inherited;
+end;
+
+function TOrderLinkedList.GetNode(Index: Integer): POrderNode;
+var
+  I: Integer;
+begin
+  if (Index < 0) or (Index >= FCount) then
+    raise Exception.Create('Индекс списка квитанций вне диапазона.');
+
+  Result := FHead;
+  for I := 0 to Index - 1 do
+    Result := Result^.Next;
+end;
+
+function TOrderLinkedList.GetItem(Index: Integer): TOrder;
+begin
+  Result := GetNode(Index)^.Data;
+end;
+
+procedure TOrderLinkedList.SetItem(Index: Integer; const Value: TOrder);
+begin
+  GetNode(Index)^.Data := Value;
+end;
+
+procedure TOrderLinkedList.Clear;
+var
+  CurrentNode, NextNode: POrderNode;
+begin
+  CurrentNode := FHead;
+  while CurrentNode <> nil do
+  begin
+    NextNode := CurrentNode^.Next;
+    Dispose(CurrentNode);
+    CurrentNode := NextNode;
+  end;
+
+  FHead := nil;
+  FTail := nil;
+  FCount := 0;
+end;
+
+procedure TOrderLinkedList.Add(const Value: TOrder);
+var
+  NewNode: POrderNode;
+begin
+  New(NewNode);
+  NewNode^.Data := Value;
+  NewNode^.Next := nil;
+
+  if FHead = nil then
+    FHead := NewNode
+  else
+    FTail^.Next := NewNode;
+
+  FTail := NewNode;
+  Inc(FCount);
+end;
+
+procedure TOrderLinkedList.Delete(Index: Integer);
+var
+  CurrentNode, PrevNode: POrderNode;
+  I: Integer;
+begin
+  if (Index < 0) or (Index >= FCount) then
+    Exit;
+
+  PrevNode := nil;
+  CurrentNode := FHead;
+
+  for I := 0 to Index - 1 do
+  begin
+    PrevNode := CurrentNode;
+    CurrentNode := CurrentNode^.Next;
+  end;
+
+  if PrevNode = nil then
+    FHead := CurrentNode^.Next
+  else
+    PrevNode^.Next := CurrentNode^.Next;
+
+  if CurrentNode = FTail then
+    FTail := PrevNode;
+
+  Dispose(CurrentNode);
+  Dec(FCount);
+end;
+
+procedure TOrderLinkedList.Exchange(Index1, Index2: Integer);
+var
+  Node1, Node2: POrderNode;
+  Temp: TOrder;
+begin
+  if Index1 = Index2 then
+    Exit;
+
+  Node1 := GetNode(Index1);
+  Node2 := GetNode(Index2);
+  Temp := Node1^.Data;
+  Node1^.Data := Node2^.Data;
+  Node2^.Data := Temp;
+end;
+
+constructor TEmployeeLinkedList.Create;
+begin
+  inherited Create;
+  FHead := nil;
+  FTail := nil;
+  FCount := 0;
+end;
+
+destructor TEmployeeLinkedList.Destroy;
+begin
+  Clear;
+  inherited;
+end;
+
+function TEmployeeLinkedList.GetNode(Index: Integer): PEmployeeNode;
+var
+  I: Integer;
+begin
+  if (Index < 0) or (Index >= FCount) then
+    raise Exception.Create('Индекс списка сотрудников вне диапазона.');
+
+  Result := FHead;
+  for I := 0 to Index - 1 do
+    Result := Result^.Next;
+end;
+
+function TEmployeeLinkedList.GetItem(Index: Integer): TEmployee;
+begin
+  Result := GetNode(Index)^.Data;
+end;
+
+procedure TEmployeeLinkedList.SetItem(Index: Integer; const Value: TEmployee);
+begin
+  GetNode(Index)^.Data := Value;
+end;
+
+procedure TEmployeeLinkedList.Clear;
+var
+  CurrentNode, NextNode: PEmployeeNode;
+begin
+  CurrentNode := FHead;
+  while CurrentNode <> nil do
+  begin
+    NextNode := CurrentNode^.Next;
+    Dispose(CurrentNode);
+    CurrentNode := NextNode;
+  end;
+
+  FHead := nil;
+  FTail := nil;
+  FCount := 0;
+end;
+
+procedure TEmployeeLinkedList.Add(const Value: TEmployee);
+var
+  NewNode: PEmployeeNode;
+begin
+  New(NewNode);
+  NewNode^.Data := Value;
+  NewNode^.Next := nil;
+
+  if FHead = nil then
+    FHead := NewNode
+  else
+    FTail^.Next := NewNode;
+
+  FTail := NewNode;
+  Inc(FCount);
+end;
+
+procedure TEmployeeLinkedList.Delete(Index: Integer);
+var
+  CurrentNode, PrevNode: PEmployeeNode;
+  I: Integer;
+begin
+  if (Index < 0) or (Index >= FCount) then
+    Exit;
+
+  PrevNode := nil;
+  CurrentNode := FHead;
+
+  for I := 0 to Index - 1 do
+  begin
+    PrevNode := CurrentNode;
+    CurrentNode := CurrentNode^.Next;
+  end;
+
+  if PrevNode = nil then
+    FHead := CurrentNode^.Next
+  else
+    PrevNode^.Next := CurrentNode^.Next;
+
+  if CurrentNode = FTail then
+    FTail := PrevNode;
+
+  Dispose(CurrentNode);
+  Dec(FCount);
+end;
+
+procedure TEmployeeLinkedList.Exchange(Index1, Index2: Integer);
+var
+  Node1, Node2: PEmployeeNode;
+  Temp: TEmployee;
+begin
+  if Index1 = Index2 then
+    Exit;
+
+  Node1 := GetNode(Index1);
+  Node2 := GetNode(Index2);
+  Temp := Node1^.Data;
+  Node1^.Data := Node2^.Data;
+  Node2^.Data := Temp;
+end;
+
+constructor TIntLinkedList.Create;
+begin
+  inherited Create;
+  FHead := nil;
+  FTail := nil;
+  FCount := 0;
+end;
+
+destructor TIntLinkedList.Destroy;
+begin
+  Clear;
+  inherited;
+end;
+
+function TIntLinkedList.GetNode(Index: Integer): PIntNode;
+var
+  I: Integer;
+begin
+  if (Index < 0) or (Index >= FCount) then
+    raise Exception.Create('Индекс списка вне диапазона.');
+
+  Result := FHead;
+  for I := 0 to Index - 1 do
+    Result := Result^.Next;
+end;
+
+function TIntLinkedList.GetItem(Index: Integer): Integer;
+begin
+  Result := GetNode(Index)^.Data;
+end;
+
+procedure TIntLinkedList.SetItem(Index: Integer; const Value: Integer);
+begin
+  GetNode(Index)^.Data := Value;
+end;
+
+procedure TIntLinkedList.Clear;
+var
+  CurrentNode, NextNode: PIntNode;
+begin
+  CurrentNode := FHead;
+  while CurrentNode <> nil do
+  begin
+    NextNode := CurrentNode^.Next;
+    Dispose(CurrentNode);
+    CurrentNode := NextNode;
+  end;
+
+  FHead := nil;
+  FTail := nil;
+  FCount := 0;
+end;
+
+procedure TIntLinkedList.Add(const Value: Integer);
+var
+  NewNode: PIntNode;
+begin
+  New(NewNode);
+  NewNode^.Data := Value;
+  NewNode^.Next := nil;
+
+  if FHead = nil then
+    FHead := NewNode
+  else
+    FTail^.Next := NewNode;
+
+  FTail := NewNode;
+  Inc(FCount);
+end;
+
+procedure TIntLinkedList.Delete(Index: Integer);
+var
+  CurrentNode, PrevNode: PIntNode;
+  I: Integer;
+begin
+  if (Index < 0) or (Index >= FCount) then
+    Exit;
+
+  PrevNode := nil;
+  CurrentNode := FHead;
+
+  for I := 0 to Index - 1 do
+  begin
+    PrevNode := CurrentNode;
+    CurrentNode := CurrentNode^.Next;
+  end;
+
+  if PrevNode = nil then
+    FHead := CurrentNode^.Next
+  else
+    PrevNode^.Next := CurrentNode^.Next;
+
+  if CurrentNode = FTail then
+    FTail := PrevNode;
+
+  Dispose(CurrentNode);
+  Dec(FCount);
+end;
+
+procedure TIntLinkedList.Exchange(Index1, Index2: Integer);
+var
+  Node1, Node2: PIntNode;
+  Temp: Integer;
+begin
+  if Index1 = Index2 then
+    Exit;
+
+  Node1 := GetNode(Index1);
+  Node2 := GetNode(Index2);
+  Temp := Node1^.Data;
+  Node1^.Data := Node2^.Data;
+  Node2^.Data := Temp;
+end;
+
 // Освобождение динамических списков при закрытии формы.
 destructor TForm1.Destroy;
 begin
@@ -174,10 +654,10 @@ end;
 // Инициализация формы и начальных параметров программы.
 procedure TForm1.FormCreate(Sender: TObject);
 begin
-  Orders := TList<TOrder>.Create;
-  Employees := TList<TEmployee>.Create;
-  ViewOrderIndexes := TList<Integer>.Create;
-  ViewEmployeeIndexes := TList<Integer>.Create;
+  Orders := TOrderLinkedList.Create;
+  Employees := TEmployeeLinkedList.Create;
+  ViewOrderIndexes := TIntLinkedList.Create;
+  ViewEmployeeIndexes := TIntLinkedList.Create;
 
   CurrentTable := ctOrders;
   CurrentFileName := '';
@@ -388,81 +868,8 @@ begin
   ShowEmployeeReport(dtpFrom.Date, dtpTo.Date);
 end;
 
-// Загрузка данных из dat-файла с текстовой структурой строк.
-procedure TForm1.mnuLoadClick(Sender: TObject);
-var
-  Dlg: TOpenDialog;
-begin
-  Dlg := TOpenDialog.Create(nil);
-  try
-    Dlg.Filter := 'Файлы данных (*.dat)|*.dat|Все файлы (*.*)|*.*';
-    Dlg.DefaultExt := 'dat';
 
-    if Dlg.Execute then
-    begin
-      LoadDataFromFile(Dlg.FileName);
-      CurrentFileName := Dlg.FileName;
-      IsModified := False;
-      edtSearch.Text := '';
-      CancelSearch;
-      ShowMessage('Файл загружен.');
-    end;
-  finally
-    Dlg.Free;
-  end;
-end;
-
-procedure TForm1.mnuSaveClick(Sender: TObject);
-begin
-  if not CommitCurrentCell then
-    Exit;
-
-  SaveWasCancelled := False;
-
-  if CurrentFileName = '' then
-    mnuSaveAsClick(Sender)
-  else
-  begin
-    SaveDataToFile(CurrentFileName);
-    IsModified := False;
-    ShowMessage('Файл сохранён.');
-  end;
-end;
-
-procedure TForm1.mnuSaveAsClick(Sender: TObject);
-var
-  Dlg: TSaveDialog;
-begin
-  if not CommitCurrentCell then
-    Exit;
-
-  SaveWasCancelled := False;
-
-  Dlg := TSaveDialog.Create(nil);
-  try
-    Dlg.Filter := 'Файлы данных (*.dat)|*.dat|Все файлы (*.*)|*.*';
-    Dlg.DefaultExt := 'dat';
-
-    if Dlg.Execute then
-    begin
-      SaveDataToFile(Dlg.FileName);
-      CurrentFileName := Dlg.FileName;
-      IsModified := False;
-      ShowMessage('Файл сохранён.');
-    end
-    else
-      SaveWasCancelled := True;
-  finally
-    Dlg.Free;
-  end;
-end;
-
-procedure TForm1.mnuExitNoSaveClick(Sender: TObject);
-begin
-  ForceCloseWithoutSaving := True;
-  Close;
-end;
-
+// Обработка закрытия формы: при наличии изменений предлагается сохранить данные.
 procedure TForm1.FormCloseQuery(Sender: TObject; var CanClose: Boolean);
 var
   Answer: Integer;
@@ -506,7 +913,103 @@ begin
   end;
 end;
 
-// Диалог выхода с русскими кнопками.
+// Пункт меню Файл -> Загрузить. Загружает типизированный dat-файл.
+procedure TForm1.mnuLoadClick(Sender: TObject);
+var
+  Dlg: TOpenDialog;
+begin
+  if not CommitCurrentCell then
+    Exit;
+
+  Dlg := TOpenDialog.Create(nil);
+  try
+    Dlg.Filter := 'Файлы данных (*.dat)|*.dat|Все файлы (*.*)|*.*';
+    Dlg.DefaultExt := 'dat';
+
+    if Dlg.Execute then
+    begin
+      try
+        LoadDataFromFile(Dlg.FileName);
+        CurrentFileName := Dlg.FileName;
+        IsModified := False;
+        edtSearch.Text := '';
+        CancelSearch;
+        ShowMessage('Файл загружен.');
+      except
+        on E: Exception do
+          ShowMessage('Ошибка загрузки файла: ' + E.Message);
+      end;
+    end;
+  finally
+    Dlg.Free;
+  end;
+end;
+
+// Пункт меню Файл -> Сохранить. Если файл ещё не выбран, вызывает Сохранить как.
+procedure TForm1.mnuSaveClick(Sender: TObject);
+begin
+  if not CommitCurrentCell then
+    Exit;
+
+  SaveWasCancelled := False;
+
+  if CurrentFileName = '' then
+    mnuSaveAsClick(Sender)
+  else
+  begin
+    try
+      SaveDataToFile(CurrentFileName);
+      IsModified := False;
+      ShowMessage('Файл сохранён.');
+    except
+      on E: Exception do
+        ShowMessage('Ошибка сохранения файла: ' + E.Message);
+    end;
+  end;
+end;
+
+// Пункт меню Файл -> Сохранить как. Позволяет выбрать новый dat-файл.
+procedure TForm1.mnuSaveAsClick(Sender: TObject);
+var
+  Dlg: TSaveDialog;
+begin
+  if not CommitCurrentCell then
+    Exit;
+
+  SaveWasCancelled := False;
+
+  Dlg := TSaveDialog.Create(nil);
+  try
+    Dlg.Filter := 'Файлы данных (*.dat)|*.dat|Все файлы (*.*)|*.*';
+    Dlg.DefaultExt := 'dat';
+
+    if Dlg.Execute then
+    begin
+      try
+        SaveDataToFile(Dlg.FileName);
+        CurrentFileName := Dlg.FileName;
+        IsModified := False;
+        ShowMessage('Файл сохранён.');
+      except
+        on E: Exception do
+          ShowMessage('Ошибка сохранения файла: ' + E.Message);
+      end;
+    end
+    else
+      SaveWasCancelled := True;
+  finally
+    Dlg.Free;
+  end;
+end;
+
+// Выход без сохранения изменений.
+procedure TForm1.mnuExitNoSaveClick(Sender: TObject);
+begin
+  ForceCloseWithoutSaving := True;
+  Close;
+end;
+
+// Диалог с русскими кнопками при закрытии программы.
 function TForm1.AskSaveChangesRussian: Integer;
 var
   F: TForm;
@@ -606,122 +1109,96 @@ begin
   end;
 end;
 
-// Чтение dat-файла. Внутренний формат строк остается текстовым.
+// Загрузка данных из типизированного dat-файла file of TRepairFileRecord.
 procedure TForm1.LoadDataFromFile(const FileName: string);
 var
-  Lines: TStringList;
-  Parts: TStringList;
-  I: Integer;
-  Section: string;
+  DataFile: file of TRepairFileRecord;
+  FileRecord: TRepairFileRecord;
   OrderItem: TOrder;
   EmployeeItem: TEmployee;
 begin
-  Lines := TStringList.Create;
-  Parts := TStringList.Create;
+  Orders.Clear;
+  Employees.Clear;
+
+  AssignFile(DataFile, FileName);
+  Reset(DataFile);
   try
-    Lines.LoadFromFile(FileName, TEncoding.UTF8);
-
-    Orders.Clear;
-    Employees.Clear;
-
-    Section := '';
-
-    for I := 0 to Lines.Count - 1 do
+    while not Eof(DataFile) do
     begin
-      if Trim(Lines[I]) = '' then
-        Continue;
+      Read(DataFile, FileRecord);
 
-      if SameText(Trim(Lines[I]), '[ORDERS]') then
-      begin
-        Section := 'ORDERS';
-        Continue;
-      end;
+      case FileRecord.Kind of
+        rkOrder:
+          begin
+            OrderItem.GroupName := FixedCharsToString(FileRecord.OrderGroupName);
+            OrderItem.Brand := FixedCharsToString(FileRecord.OrderBrand);
+            OrderItem.AcceptDate := FixedCharsToString(FileRecord.OrderAcceptDate);
+            OrderItem.EmployeeCode := FixedCharsToString(FileRecord.OrderEmployeeCode);
+            OrderItem.IsDone := FileRecord.OrderIsDone;
 
-      if SameText(Trim(Lines[I]), '[EMPLOYEES]') then
-      begin
-        Section := 'EMPLOYEES';
-        Continue;
-      end;
+            Orders.Add(OrderItem);
+          end;
 
-      SplitLine(Lines[I], Parts);
+        rkEmployee:
+          begin
+            EmployeeItem.Code := FixedCharsToString(FileRecord.EmployeeCode);
+            EmployeeItem.FullName := FixedCharsToString(FileRecord.EmployeeFullName);
+            EmployeeItem.Position := FixedCharsToString(FileRecord.EmployeePosition);
+            EmployeeItem.HoursPerDay := FileRecord.EmployeeHoursPerDay;
 
-      if SameText(Section, 'ORDERS') then
-      begin
-        if Parts.Count >= 5 then
-        begin
-          OrderItem.GroupName := UnescapeField(Parts[0]);
-          OrderItem.Brand := UnescapeField(Parts[1]);
-          OrderItem.AcceptDate := UnescapeField(Parts[2]);
-          OrderItem.EmployeeCode := UnescapeField(Parts[3]);
-          OrderItem.IsDone := Parts[4] = '1';
-
-          Orders.Add(OrderItem);
-        end;
-      end
-      else if SameText(Section, 'EMPLOYEES') then
-      begin
-        if Parts.Count >= 4 then
-        begin
-          EmployeeItem.Code := UnescapeField(Parts[0]);
-          EmployeeItem.FullName := UnescapeField(Parts[1]);
-          EmployeeItem.Position := UnescapeField(Parts[2]);
-          EmployeeItem.HoursPerDay := StrToIntDef(Parts[3], 0);
-
-          Employees.Add(EmployeeItem);
-        end;
+            Employees.Add(EmployeeItem);
+          end;
       end;
     end;
-
-    BuildFullViewIndexes;
   finally
-    Lines.Free;
-    Parts.Free;
+    CloseFile(DataFile);
   end;
+
+  BuildFullViewIndexes;
 end;
 
-// Сохранение данных в dat-файл с тем же текстовым содержимым.
+// Сохранение данных в типизированный dat-файл file of TRepairFileRecord.
 procedure TForm1.SaveDataToFile(const FileName: string);
 var
-  Lines: TStringList;
+  DataFile: file of TRepairFileRecord;
+  FileRecord: TRepairFileRecord;
   I: Integer;
   OrderItem: TOrder;
   EmployeeItem: TEmployee;
 begin
-  Lines := TStringList.Create;
+  AssignFile(DataFile, FileName);
+  Rewrite(DataFile);
   try
-    Lines.Add('[ORDERS]');
-
     for I := 0 to Orders.Count - 1 do
     begin
       OrderItem := Orders[I];
+      ClearFileRecord(FileRecord);
 
-      Lines.Add(
-        EscapeField(OrderItem.GroupName) + ';' +
-        EscapeField(OrderItem.Brand) + ';' +
-        EscapeField(OrderItem.AcceptDate) + ';' +
-        EscapeField(OrderItem.EmployeeCode) + ';' +
-        BoolToFileText(OrderItem.IsDone)
-      );
+      FileRecord.Kind := rkOrder;
+      StringToFixedChars(OrderItem.GroupName, FileRecord.OrderGroupName);
+      StringToFixedChars(OrderItem.Brand, FileRecord.OrderBrand);
+      StringToFixedChars(OrderItem.AcceptDate, FileRecord.OrderAcceptDate);
+      StringToFixedChars(OrderItem.EmployeeCode, FileRecord.OrderEmployeeCode);
+      FileRecord.OrderIsDone := OrderItem.IsDone;
+
+      Write(DataFile, FileRecord);
     end;
-
-    Lines.Add('');
-    Lines.Add('[EMPLOYEES]');
 
     for I := 0 to Employees.Count - 1 do
     begin
       EmployeeItem := Employees[I];
+      ClearFileRecord(FileRecord);
 
-      Lines.Add(
-        EscapeField(EmployeeItem.Code) + ';' +
-        EscapeField(EmployeeItem.FullName) + ';' +
-        EscapeField(EmployeeItem.Position) + ';' +
-        IntToStr(EmployeeItem.HoursPerDay)
-      );
+      FileRecord.Kind := rkEmployee;
+      StringToFixedChars(EmployeeItem.Code, FileRecord.EmployeeCode);
+      StringToFixedChars(EmployeeItem.FullName, FileRecord.EmployeeFullName);
+      StringToFixedChars(EmployeeItem.Position, FileRecord.EmployeePosition);
+      FileRecord.EmployeeHoursPerDay := EmployeeItem.HoursPerDay;
+
+      Write(DataFile, FileRecord);
     end;
-
-    Lines.SaveToFile(FileName, TEncoding.UTF8);
   finally
-    Lines.Free;
+    CloseFile(DataFile);
   end;
 end;
 
@@ -1436,16 +1913,16 @@ end;
 procedure TForm1.ShowReadyTodayReport;
 var
   Groups: TStringList;
-  Total, Done, NotDone: TList<Integer>;
+  Total, Done, NotDone: TIntLinkedList;
   DataRows: TStringList;
   I, Index: Integer;
   Today: TDate;
   OrderItem: TOrder;
 begin
   Groups := TStringList.Create;
-  Total := TList<Integer>.Create;
-  Done := TList<Integer>.Create;
-  NotDone := TList<Integer>.Create;
+  Total := TIntLinkedList.Create;
+  Done := TIntLinkedList.Create;
+  NotDone := TIntLinkedList.Create;
   DataRows := TStringList.Create;
   try
     Today := Date;
@@ -1777,7 +2254,7 @@ begin
   end;
 end;
 
-// Разделяет строку файла по символу ';'.
+// Разделяет строку по символу ';' для формирования табличных отчётов.
 procedure TForm1.SplitLine(const S: string; Parts: TStrings);
 var
   I: Integer;
