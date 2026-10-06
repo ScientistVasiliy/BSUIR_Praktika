@@ -249,7 +249,7 @@ type
     function UnescapeField(const S: string): string;
 
     procedure PrepareGridBase;
-    procedure CreateReportWindow(const Title, HeaderLine: string; DataRows: TStrings);
+    procedure SaveReportToTextFile(const DialogTitle, DefaultFileName: string; ReportLines: TStrings);
 
     function AskSaveChangesRussian: Integer;
     function AskDeleteRussian: Boolean;
@@ -1909,12 +1909,12 @@ begin
   end;
 end;
 
-// Отчёт по готовности заказов за текущие сутки.
+// Формирует отчёт по готовности заказов за текущие сутки и сохраняет его в txt-файл.
 procedure TForm1.ShowReadyTodayReport;
 var
   Groups: TStringList;
   Total, Done, NotDone: TIntLinkedList;
-  DataRows: TStringList;
+  ReportLines: TStringList;
   I, Index: Integer;
   Today: TDate;
   OrderItem: TOrder;
@@ -1923,7 +1923,7 @@ begin
   Total := TIntLinkedList.Create;
   Done := TIntLinkedList.Create;
   NotDone := TIntLinkedList.Create;
-  DataRows := TStringList.Create;
+  ReportLines := TStringList.Create;
   try
     Today := Date;
 
@@ -1954,29 +1954,30 @@ begin
     end;
 
     for I := 0 to Groups.Count - 1 do
-      DataRows.Add(Groups[I] + ';' + IntToStr(Total[I]) + ';' +
-        IntToStr(Done[I]) + ';' + IntToStr(NotDone[I]));
+      ReportLines.Add(Groups[I] + ': всего за сегодня - ' +
+        IntToStr(Total[I]) + ', выполнено - ' + IntToStr(Done[I]) +
+        ', не выполнено - ' + IntToStr(NotDone[I]));
 
-    CreateReportWindow(
-      'Состояние готовности заказов на текущие сутки',
-      'Группа изделия;Всего за сегодня;Выполнено;Не выполнено',
-      DataRows
+    SaveReportToTextFile(
+      'Сохранение отчёта о готовности заказов',
+      'готовые за сегодня.txt',
+      ReportLines
     );
   finally
     Groups.Free;
     Total.Free;
     Done.Free;
     NotDone.Free;
-    DataRows.Free;
+    ReportLines.Free;
   end;
 end;
 
-// Отчёт о выполненных заказах по сотрудникам за период.
+// Формирует отчёт о выполненных заказах по сотрудникам за период и сохраняет его в txt-файл.
 procedure TForm1.ShowEmployeeReport(DateFrom, DateTo: TDate);
 var
   I, J, CountDone: Integer;
   D: TDate;
-  DataRows: TStringList;
+  ReportLines: TStringList;
   EmployeeItem: TEmployee;
   OrderItem: TOrder;
 begin
@@ -1986,7 +1987,7 @@ begin
     Exit;
   end;
 
-  DataRows := TStringList.Create;
+  ReportLines := TStringList.Create;
   try
     for I := 0 to Employees.Count - 1 do
     begin
@@ -2008,78 +2009,40 @@ begin
             Inc(CountDone);
       end;
 
-      DataRows.Add(EscapeField(EmployeeItem.Code) + ';' +
-        EscapeField(EmployeeItem.FullName) + ';' +
-        EscapeField(EmployeeItem.Position) + ';' +
+      ReportLines.Add(EmployeeItem.FullName + ': код - ' + EmployeeItem.Code +
+        ', должность - ' + EmployeeItem.Position + ', выполнено заказов - ' +
         IntToStr(CountDone));
     end;
 
-    CreateReportWindow(
-      'Число выполненных заказов по сотрудникам',
-      'Код;ФИО;Должность;Выполнено заказов',
-      DataRows
+    SaveReportToTextFile(
+      'Сохранение отчёта по сотрудникам',
+      'отчёт по сотрудникам.txt',
+      ReportLines
     );
   finally
-    DataRows.Free;
+    ReportLines.Free;
   end;
 end;
 
-// Создаёт отдельное окно с табличным отчётом.
-procedure TForm1.CreateReportWindow(const Title, HeaderLine: string; DataRows: TStrings);
+// Открывает диалог сохранения и записывает сформированный отчёт в текстовый файл.
+procedure TForm1.SaveReportToTextFile(const DialogTitle, DefaultFileName: string; ReportLines: TStrings);
 var
-  F: TForm;
-  G: TStringGrid;
-  Headers: TStringList;
-  Parts: TStringList;
-  I, J: Integer;
+  Dlg: TSaveDialog;
 begin
-  F := TForm.Create(nil);
-  Headers := TStringList.Create;
-  Parts := TStringList.Create;
+  Dlg := TSaveDialog.Create(nil);
   try
-    F.Caption := Title;
-    F.Width := 700;
-    F.Height := 400;
-    F.Position := poScreenCenter;
+    Dlg.Title := DialogTitle;
+    Dlg.Filter := 'Текстовые файлы (*.txt)|*.txt|Все файлы (*.*)|*.*';
+    Dlg.DefaultExt := 'txt';
+    Dlg.FileName := DefaultFileName;
 
-    G := TStringGrid.Create(F);
-    G.Parent := F;
-    G.Align := alClient;
-    G.FixedRows := 1;
-    G.FixedCols := 0;
-    G.ScrollBars := ssVertical;
-
-    SplitLine(HeaderLine, Headers);
-    G.ColCount := Headers.Count;
-    G.RowCount := DataRows.Count + 1;
-
-    G.Options := G.Options + [
-      goColSizing,
-      goFixedVertLine,
-      goFixedHorzLine,
-      goVertLine,
-      goHorzLine
-    ];
-
-    for I := 0 to Headers.Count - 1 do
+    if Dlg.Execute then
     begin
-      G.Cells[I, 0] := Headers[I];
-      G.ColWidths[I] := 150;
+      ReportLines.SaveToFile(Dlg.FileName, TEncoding.UTF8);
+      ShowMessage('Отчёт сохранён.');
     end;
-
-    for I := 0 to DataRows.Count - 1 do
-    begin
-      SplitLine(DataRows[I], Parts);
-      for J := 0 to Parts.Count - 1 do
-        if J < G.ColCount then
-          G.Cells[J, I + 1] := Parts[J];
-    end;
-
-    F.ShowModal;
   finally
-    Parts.Free;
-    Headers.Free;
-    F.Free;
+    Dlg.Free;
   end;
 end;
 
